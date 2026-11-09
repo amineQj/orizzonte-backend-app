@@ -48,3 +48,4 @@ Thumbs.db
 .env
 db.sqlite3
 *.bak
+db.sqlite3.avant-reset
