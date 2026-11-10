@@ -18,6 +18,9 @@ venv/
 env/
 .venv/
 
+# Python / Tests
+.pytest_cache/
+
 # ======================
 # Environment variables
 # ======================

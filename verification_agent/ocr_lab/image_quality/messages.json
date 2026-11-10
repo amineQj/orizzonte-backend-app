@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0.0",
+  "LOW_RES": {
+    "en": "The document is too small in the photo. Move closer and keep the whole document visible.",
+    "fr": "Le document est trop petit sur la photo. Rapprochez-vous en gardant tout le document visible.",
+    "ar": ""
+  },
+  "TOO_SMALL": {
+    "en": "The photo resolution is too low. Take a new photo with the main camera.",
+    "fr": "La résolution de la photo est trop faible. Prenez une nouvelle photo avec la caméra principale.",
+    "ar": ""
+  },
+  "BLURRY": {
+    "en": "The photo is blurry. Hold the phone steady and tap to focus.",
+    "fr": "La photo est floue. Tenez le téléphone stable et touchez pour faire la mise au point.",
+    "ar": ""
+  },
+  "DARK": {
+    "en": "The photo is too dark. Move to a brighter place and avoid shadows.",
+    "fr": "La photo est trop sombre. Placez-vous dans un endroit plus lumineux et évitez les ombres.",
+    "ar": ""
+  },
+  "OVEREXPOSED": {
+    "en": "The photo is too bright. Reduce direct light or turn off the flash.",
+    "fr": "La photo est trop claire. Réduisez la lumière directe ou désactivez le flash.",
+    "ar": ""
+  },
+  "UNEVEN_LIGHT": {
+    "en": "The lighting is uneven. Use soft, even light and avoid strong shadows.",
+    "fr": "L'éclairage est inégal. Utilisez une lumière douce et uniforme et évitez les ombres fortes.",
+    "ar": ""
+  },
+  "LOW_CONTRAST": {
+    "en": "The document is hard to read. Use even lighting and avoid a washed-out image.",
+    "fr": "Le document est difficile à lire. Utilisez un éclairage uniforme et évitez une image délavée.",
+    "ar": ""
+  },
+  "GLARE": {
+    "en": "There is glare on the document. Tilt the phone slightly and avoid direct light.",
+    "fr": "Il y a des reflets sur le document. Inclinez légèrement le téléphone et évitez la lumière directe.",
+    "ar": ""
+  },
+  "CROPPED": {
+    "en": "Part of the document is cut off. Keep all four edges inside the frame.",
+    "fr": "Une partie du document est coupée. Gardez les quatre bords dans le cadre.",
+    "ar": ""
+  },
+  "ROTATED": {
+    "en": "The document is tilted. Align it with the frame and take the photo again.",
+    "fr": "Le document est incliné. Alignez-le avec le cadre et reprenez la photo.",
+    "ar": ""
+  },
+  "PERSPECTIVE": {
+    "en": "The photo is taken at a strong angle. Hold the camera parallel to the document.",
+    "fr": "La photo est prise avec un angle trop fort. Tenez la caméra parallèle au document.",
+    "ar": ""
+  },
+  "NO_DOCUMENT_FOUND": {
+    "en": "No document was detected. Fill the frame with the document and avoid the background.",
+    "fr": "Aucun document n'a été détecté. Cadrez le document et évitez l'arrière-plan.",
+    "ar": ""
+  },
+  "UNREADABLE_IMAGE": {
+    "en": "The image cannot be read. Choose a valid JPEG, PNG or WebP photo.",
+    "fr": "L'image ne peut pas être lue. Choisissez une photo JPEG, PNG ou WebP valide.",
+    "ar": ""
+  }
+}
