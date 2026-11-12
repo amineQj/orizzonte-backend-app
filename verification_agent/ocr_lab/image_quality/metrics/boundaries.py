@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any
 
 import cv2
@@ -10,6 +11,20 @@ import numpy as np
 
 from ..normalization import WorkingImage
 from ..output_schema import MetricResult
+
+REJECTION_REASON_KEYS = (
+    "aspect_ratio",
+    "area_ratio",
+    "solidity",
+    "confidence",
+    "border_contact",
+    "none_found",
+)
+
+
+def _rejection_payload(counts: Counter[str] | dict[str, int] | None) -> dict[str, int]:
+    source = counts or {}
+    return {key: int(source.get(key, 0)) for key in REJECTION_REASON_KEYS}
 
 
 @dataclass(frozen=True)
@@ -31,6 +46,9 @@ class BoundaryResult:
     solidity: float
     method: str = "contour_quadrilateral"
     warning: str | None = None
+    rejection_counts: dict[str, int] = field(default_factory=dict)
+    clear_rectangle_heuristic: bool = False
+    rectangle_edge_counts: dict[str, int] = field(default_factory=dict)
 
     def to_metric(self, cfg: dict[str, Any]) -> MetricResult:
         value = {
@@ -56,6 +74,12 @@ class BoundaryResult:
             "solidity": round(float(self.solidity), 4),
             "detector_used": self.method,
             "warning": self.warning,
+            "rejection_counts": _rejection_payload(self.rejection_counts),
+            "clear_rectangle_heuristic": bool(self.clear_rectangle_heuristic),
+            "rectangle_edge_counts": {
+                "horizontal": int(self.rectangle_edge_counts.get("horizontal", 0)),
+                "vertical": int(self.rectangle_edge_counts.get("vertical", 0)),
+            },
         }
         if self.valid:
             nature = "heuristic"
@@ -196,6 +220,73 @@ def _border_content_sides(
     return sides
 
 
+def _cluster_axis_positions(positions: list[float], tolerance: float) -> int:
+    """Count distinct parallel edge positions within a tolerance band."""
+
+    if not positions:
+        return 0
+    ordered = sorted(positions)
+    clusters = 1
+    previous = ordered[0]
+    for position in ordered[1:]:
+        if position - previous > tolerance:
+            clusters += 1
+        previous = position
+    return clusters
+
+
+def _strong_rectangle_edges(
+    gray: np.ndarray,
+    cfg: dict[str, Any],
+) -> tuple[bool, dict[str, int]]:
+    """Return a cheap four-strong-edge heuristic for diagnostics only.
+
+    This deliberately does not feed back into the decision engine.  It is
+    useful when the closed-contour detector finds no candidate: two long
+    near-horizontal and two long near-vertical Hough segments indicate that a
+    human-visible rectangle exists even though contour closing failed.
+    """
+
+    height, width = gray.shape[:2]
+    min_side = float(min(width, height))
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(
+        blurred,
+        int(cfg["canny_low"]),
+        int(cfg["canny_high"]),
+    )
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180.0,
+        threshold=max(24, int(min_side * 0.06)),
+        minLineLength=max(24, int(min_side * 0.20)),
+        maxLineGap=max(8, int(min_side * 0.04)),
+    )
+    horizontal: list[float] = []
+    vertical: list[float] = []
+    if lines is not None:
+        for line in lines:
+            coordinates = np.asarray(line).reshape(-1)
+            if coordinates.size < 4:
+                continue
+            x1, y1, x2, y2 = (float(value) for value in coordinates[:4])
+            dx = abs(x2 - x1)
+            dy = abs(y2 - y1)
+            if np.hypot(dx, dy) < min_side * 0.20:
+                continue
+            angle = float(np.degrees(np.arctan2(dy, dx)))
+            if angle <= 15.0:
+                horizontal.append((y1 + y2) / 2.0)
+            elif angle >= 75.0:
+                vertical.append((x1 + x2) / 2.0)
+    tolerance = max(8.0, min_side * 0.03)
+    horizontal_count = _cluster_axis_positions(horizontal, tolerance)
+    vertical_count = _cluster_axis_positions(vertical, tolerance)
+    counts = {"horizontal": horizontal_count, "vertical": vertical_count}
+    return horizontal_count >= 2 and vertical_count >= 2, counts
+
+
 def _center_crop_candidate(
     *,
     width: int,
@@ -269,6 +360,7 @@ def _hough_rectangle_candidate(
     cfg: dict[str, Any],
     tolerance: float,
     edge_density: float,
+    rejection_counts: Counter[str],
 ) -> dict[str, Any] | None:
     """Recover a broken card rectangle from straight edge segments.
 
@@ -334,13 +426,16 @@ def _hough_rectangle_candidate(
     for contour in contours:
         area = float(cv2.contourArea(contour))
         if area < minimum_area:
+            rejection_counts["area_ratio"] += 1
             continue
         hull = cv2.convexHull(contour)
         hull_area = float(cv2.contourArea(hull))
         if hull_area <= 0:
+            rejection_counts["solidity"] += 1
             continue
         solidity = area / hull_area
         if solidity < float(cfg["min_solidity"]):
+            rejection_counts["solidity"] += 1
             continue
 
         perimeter = float(cv2.arcLength(contour, True))
@@ -356,8 +451,10 @@ def _hough_rectangle_candidate(
             box = cv2.boxPoints(cv2.minAreaRect(contour))
             quad = _order_quad(box)
         else:
+            rejection_counts["area_ratio"] += 1
             continue
         if len(np.unique(quad, axis=0)) < 4:
+            rejection_counts["area_ratio"] += 1
             continue
 
         candidate_count += 1
@@ -391,6 +488,9 @@ def _empty_boundary(
     cfg: dict[str, Any],
     *,
     border_sides_touching: int = 0,
+    rejection_counts: Counter[str] | dict[str, int] | None = None,
+    clear_rectangle_heuristic: bool = False,
+    rectangle_edge_counts: dict[str, int] | None = None,
 ) -> BoundaryResult:
     signals = 0
     signals += 1  # no reliable quadrilateral
@@ -416,6 +516,9 @@ def _empty_boundary(
         candidate_count=candidate_count,
         solidity=0.0,
         method="no_candidate",
+        rejection_counts=_rejection_payload(rejection_counts),
+        clear_rectangle_heuristic=bool(clear_rectangle_heuristic),
+        rectangle_edge_counts=dict(rectangle_edge_counts or {}),
     )
 
 
@@ -427,6 +530,7 @@ def _bright_region_candidate(
     edge_density: float,
     cfg: dict[str, Any],
     tolerance: float,
+    rejection_counts: Counter[str],
 ) -> dict[str, Any] | None:
     """Fallback for blurred or border-touching bright document regions.
 
@@ -450,13 +554,16 @@ def _bright_region_candidate(
     for contour in contours:
         area = float(cv2.contourArea(contour))
         if area < minimum_area:
+            rejection_counts["area_ratio"] += 1
             continue
         hull = cv2.convexHull(contour)
         hull_area = float(cv2.contourArea(hull))
         if hull_area <= 0:
+            rejection_counts["solidity"] += 1
             continue
         solidity = area / hull_area
         if solidity < float(cfg["min_solidity"]):
+            rejection_counts["solidity"] += 1
             continue
 
         perimeter = float(cv2.arcLength(contour, True))
@@ -473,17 +580,20 @@ def _bright_region_candidate(
             quad = _order_quad(box)
             method = "otsu_bright_region_min_area_rect"
         if len(np.unique(quad, axis=0)) < 4:
+            rejection_counts["area_ratio"] += 1
             continue
 
         area_ratio = area / total_area
         border_sides = _touches_border(quad, width, height, tolerance)
         if border_sides >= 2 and edge_density < float(cfg["no_document_min_edge_density"]):
             # A smooth gradient can split into a large region touching the frame.
+            rejection_counts["border_contact"] += 1
             continue
         # A whole-frame Otsu region is usually the background, not the card.
         # Let the explicit full-frame fallback handle a card that really fills
         # the frame; otherwise the frame border would be misread as CROPPED.
         if area_ratio >= 0.985 and border_sides >= 4:
+            rejection_counts["border_contact"] += 1
             continue
 
         score = area_ratio * solidity
@@ -502,6 +612,94 @@ def _bright_region_candidate(
                 "confidence": confidence,
                 "method": method,
             }
+    return best
+
+
+def _adaptive_threshold_rectangle_candidate(
+    gray: np.ndarray,
+    *,
+    width: int,
+    height: int,
+    edge_density: float,
+    cfg: dict[str, Any],
+    tolerance: float,
+    rejection_counts: Counter[str],
+) -> dict[str, Any] | None:
+    """Find a large, card-shaped region in an adaptive-threshold mask."""
+
+    mask = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY,
+        17,
+        1,
+    )
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    contours, _hierarchy = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    total_area = float(width * height)
+    best: dict[str, Any] | None = None
+    best_score = -1.0
+
+    for contour in contours:
+        contour_area = float(cv2.contourArea(contour))
+        if contour_area <= 0.05 * total_area:
+            rejection_counts["area_ratio"] += 1
+            continue
+        hull = cv2.convexHull(contour)
+        hull_area = float(cv2.contourArea(hull))
+        if hull_area <= 0.0:
+            rejection_counts["solidity"] += 1
+            continue
+        solidity = contour_area / hull_area
+        if solidity <= 0.85:
+            rejection_counts["solidity"] += 1
+            continue
+
+        rectangle = cv2.minAreaRect(contour)
+        (_center_x, _center_y), (rect_width, rect_height), _angle = rectangle
+        if min(rect_width, rect_height) <= 0.0:
+            rejection_counts["area_ratio"] += 1
+            continue
+        aspect_ratio = max(rect_width, rect_height) / min(rect_width, rect_height)
+        if not 1.3 <= aspect_ratio <= 2.0:
+            rejection_counts["aspect_ratio"] += 1
+            continue
+
+        quad = _order_quad(cv2.boxPoints(rectangle))
+        if len(np.unique(quad, axis=0)) < 4:
+            rejection_counts["area_ratio"] += 1
+            continue
+        rectangle_area = float(rect_width * rect_height)
+        area_ratio = rectangle_area / total_area
+        border_sides = _touches_border(quad, width, height, tolerance)
+        if area_ratio >= 0.985 and border_sides >= 4:
+            rejection_counts["border_contact"] += 1
+            continue
+        score = contour_area * solidity
+        if score <= best_score:
+            continue
+        best_score = score
+        best = {
+            "quad": quad,
+            "area_ratio": area_ratio,
+            "solidity": float(solidity),
+            "bbox": cv2.boundingRect(quad.astype(np.int32)),
+            "border_sides": border_sides,
+            "confidence": min(
+                0.9,
+                float(cfg["fallback_confidence"]) + 0.15 * min(1.0, area_ratio),
+            ),
+            "method": "adaptive_threshold_rectangle",
+            "candidate_count": 1,
+            "edge_density": edge_density,
+        }
     return best
 
 
@@ -536,6 +734,7 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
             candidate_count=0,
             solidity=0.0,
             method="too_small_for_boundary",
+            rejection_counts=_rejection_payload({"none_found": 1}),
         )
 
     central_fraction = float(cfg.get("central_fraction", 0.8))
@@ -563,17 +762,21 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
     candidate_count = 0
     best: dict[str, Any] | None = None
     best_score = -1.0
+    rejection_counts: Counter[str] = Counter()
 
     for contour in contours:
         area = float(cv2.contourArea(contour))
         if area < min_candidate_area:
+            rejection_counts["area_ratio"] += 1
             continue
         hull = cv2.convexHull(contour)
         hull_area = float(cv2.contourArea(hull))
         if hull_area <= 0:
+            rejection_counts["solidity"] += 1
             continue
         solidity = area / hull_area
         if solidity < float(cfg["min_solidity"]):
+            rejection_counts["solidity"] += 1
             continue
 
         perimeter = float(cv2.arcLength(contour, True))
@@ -583,10 +786,12 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
             True,
         )
         if len(approximation) != 4 or not cv2.isContourConvex(approximation):
+            rejection_counts["aspect_ratio"] += 1
             continue
 
         quad = _order_quad(approximation.reshape(4, 2))
         if len(np.unique(quad, axis=0)) < 4:
+            rejection_counts["area_ratio"] += 1
             continue
 
         candidate_count += 1
@@ -610,6 +815,7 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
         edge_density=edge_density,
         cfg=cfg,
         tolerance=tolerance,
+        rejection_counts=rejection_counts,
     )
     if bright_candidate is not None and (
         best is None or float(bright_candidate["area_ratio"]) > float(best["area_ratio"]) * 1.2
@@ -624,6 +830,7 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
             cfg=cfg,
             tolerance=tolerance,
             edge_density=edge_density,
+            rejection_counts=rejection_counts,
         )
         if hough_candidate is not None:
             best = hough_candidate
@@ -686,12 +893,31 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
             warning="border_cut_but_high_contrast",
         )
 
+    if best is None and candidate_count == 0:
+        adaptive_candidate = _adaptive_threshold_rectangle_candidate(
+            gray,
+            width=width,
+            height=height,
+            edge_density=edge_density,
+            cfg=cfg,
+            tolerance=tolerance,
+            rejection_counts=rejection_counts,
+        )
+        if adaptive_candidate is not None:
+            best = adaptive_candidate
+            candidate_count = int(adaptive_candidate.get("candidate_count", 1))
+
     if best is None:
+        clear_rectangle, rectangle_edges = _strong_rectangle_edges(gray, cfg)
+        rejection_counts["none_found"] += 1
         return _empty_boundary(
             edge_density,
             candidate_count,
             cfg,
             border_sides_touching=content_border_sides,
+            rejection_counts=rejection_counts,
+            clear_rectangle_heuristic=clear_rectangle,
+            rectangle_edge_counts=rectangle_edges,
         )
 
     # If the detected card fills more than 80% of the frame, use the whole
@@ -731,6 +957,8 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
         and bbox[3] >= height - 3
     )
     if is_frame_rectangle and edge_density < float(cfg["no_document_min_edge_density"]):
+        clear_rectangle, rectangle_edges = _strong_rectangle_edges(gray, cfg)
+        rejection_counts["border_contact"] += 1
         return BoundaryResult(
             valid=False,
             confidence=0.0,
@@ -748,6 +976,9 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
             candidate_count=candidate_count,
             solidity=solidity,
             method=method,
+            rejection_counts=_rejection_payload(rejection_counts),
+            clear_rectangle_heuristic=clear_rectangle,
+            rectangle_edge_counts=rectangle_edges,
         )
 
     valid = confidence >= float(cfg["min_confidence"])
@@ -770,6 +1001,12 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
         and valid
         and confidence >= float(cfg["cropping_min_confidence"])
     )
+    if not valid:
+        rejection_counts["confidence"] += 1
+    if aspect_in_range is False:
+        rejection_counts["aspect_ratio"] += 1
+    if cropping_suspected:
+        rejection_counts["border_contact"] += 1
 
     return BoundaryResult(
         valid=valid,
@@ -789,6 +1026,7 @@ def detect_document_boundary(working: WorkingImage, cfg: dict[str, Any]) -> Boun
         solidity=solidity,
         method=method,
         warning=warning,
+        rejection_counts=_rejection_payload(rejection_counts),
     )
 
 

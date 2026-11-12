@@ -87,6 +87,7 @@ def decide(
             if name not in entry["metrics"]:
                 entry["metrics"].append(name)
 
+    resolution_failed = False
     original = _metric_value(metrics, "resolution_original")
     if isinstance(original, dict) and _known(metrics.get("resolution_original")):
         width = _number(original.get("width_px"))
@@ -103,6 +104,7 @@ def decide(
             )
         ):
             add("TOO_SMALL", "critical", ["resolution_original"])
+            resolution_failed = True
 
     if document_analysis:
         document = _metric_value(metrics, "resolution_document")
@@ -121,6 +123,7 @@ def decide(
                 )
             ):
                 add("LOW_RES", "critical", ["resolution_document"])
+                resolution_failed = True
 
     lap = metrics.get("sharpness_laplacian")
     ten = metrics.get("sharpness_tenengrad")
@@ -151,8 +154,6 @@ def decide(
         if isinstance(boundary, dict):
             if bool(boundary.get("cropping_confirmed")):
                 add("CROPPED", "critical", ["document_boundary"])
-            if int(boundary.get("no_document_signals", 0)) >= 2:
-                add("NO_DOCUMENT_FOUND", "critical", ["document_boundary"])
 
     brightness = _metric_value(metrics, "brightness")
     brightness_value = _number(brightness)
@@ -239,6 +240,20 @@ def decide(
                 if condition
             ],
         )
+
+    if document_analysis and isinstance(boundary, dict):
+        if int(boundary.get("no_document_signals", 0)) >= 2:
+            no_document_severity = "critical"
+            if (
+                str(cfg.get("boundary", {}).get("no_document_severity", "critical"))
+                == "moderate"
+                and not resolution_failed
+                and not low_contrast
+                and not blur_critical
+                and not blur_soft_band
+            ):
+                no_document_severity = "moderate"
+            add("NO_DOCUMENT_FOUND", no_document_severity, ["document_boundary"])
 
     if (
         brightness_value is not None

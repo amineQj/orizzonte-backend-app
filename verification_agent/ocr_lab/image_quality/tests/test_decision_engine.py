@@ -121,9 +121,7 @@ def test_soft_blur_band_is_poor_quality() -> None:
 
 
 def test_easy_readable_specimen_metrics_are_acceptable() -> None:
-    # Regression for id_card_test_easy.jpeg: Laplacian 35.6451 is just above
-    # the narrowed soft upper edge (35) and Tenengrad 2480.5907 is soft.  Only
-    # one indicator is soft, so the AND rule accepts the image.
+    # One soft indicator alone remains acceptable.
     metrics = _base_metrics()
     metrics["sharpness_laplacian"] = _m(35.6451)
     metrics["sharpness_tenengrad"] = _m(2480.5907)
@@ -143,8 +141,8 @@ def test_soft_blur_boundary_is_inclusive() -> None:
 
 def test_two_hard_blur_indicators_below_soft_band_need_recapture() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(29.9)
-    metrics["sharpness_tenengrad"] = _m(1999.9)
+    metrics["sharpness_laplacian"] = _m(14.9)
+    metrics["sharpness_tenengrad"] = _m(999.9)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_RECAPTURE
     assert decision.reason_codes == ["BLURRY"]
@@ -154,7 +152,7 @@ def test_two_hard_blur_indicators_below_soft_band_need_recapture() -> None:
 def test_tenengrad_hard_indicator_alone_needs_recapture() -> None:
     metrics = _base_metrics()
     metrics["sharpness_laplacian"] = _m(50.0)
-    metrics["sharpness_tenengrad"] = _m(1999.9)
+    metrics["sharpness_tenengrad"] = _m(999.9)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_RECAPTURE
     assert decision.reason_codes == ["BLURRY"]
@@ -164,8 +162,8 @@ def test_tenengrad_hard_indicator_alone_needs_recapture() -> None:
 
 def test_low_contrast_suppresses_critical_blur() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(20.0)
-    metrics["sharpness_tenengrad"] = _m(1000.0)
+    metrics["sharpness_laplacian"] = _m(10.0)
+    metrics["sharpness_tenengrad"] = _m(500.0)
     metrics["contrast"] = _m({"p5_p95_range": 40.0, "rms_contrast": 10.0})
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_POOR
@@ -179,7 +177,7 @@ def test_low_contrast_suppresses_critical_blur() -> None:
 def test_p5_secondary_contrast_signal_is_moderate() -> None:
     metrics = _base_metrics()
     metrics["contrast"] = _m(
-        {"p5": 35.0, "p5_p95_range": 180.0, "rms_contrast": 50.0}
+        {"p5": 15.0, "p5_p95_range": 180.0, "rms_contrast": 50.0}
     )
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_POOR
@@ -310,7 +308,7 @@ def test_exposure_contrast_glare_rotation_and_perspective_rules() -> None:
 
     perspective = _base_metrics()
     perspective["perspective"] = _m(
-        {"ratio": 0.2}, nature="heuristic", confidence=0.9
+        {"ratio": 0.3}, nature="heuristic", confidence=0.9
     )
     assert "PERSPECTIVE" in decide(perspective, _cfg(), True).reason_codes
 
@@ -451,3 +449,49 @@ def test_driving_license_cut_borders_with_high_contrast_are_acceptable() -> None
     )
     assert decision.status == STATUS_ACCEPTABLE
     assert decision.reason_codes == []
+
+
+def _no_document_metrics() -> dict[str, MetricResult]:
+    metrics = _base_metrics()
+    metrics["document_boundary"] = _m(
+        {
+            "valid": False,
+            "cropping_confirmed": False,
+            "no_document_signals": 2,
+        },
+        nature="heuristic",
+        confidence=0.9,
+    )
+    return metrics
+
+
+def test_no_document_default_severity_remains_critical() -> None:
+    decision = decide(_no_document_metrics(), _cfg(), True)
+    assert decision.status == STATUS_RECAPTURE
+    assert decision.reason_codes == ["NO_DOCUMENT_FOUND"]
+    assert decision.trace[0]["severity"] == "critical"
+
+
+def test_no_document_moderate_downgrades_when_quality_passes() -> None:
+    cfg = deepcopy(_cfg())
+    cfg["boundary"]["no_document_severity"] = "moderate"
+    decision = decide(_no_document_metrics(), cfg, True)
+    assert decision.status == STATUS_POOR
+    assert decision.reason_codes == ["NO_DOCUMENT_FOUND"]
+    assert decision.trace[0]["severity"] == "moderate"
+
+
+def test_no_document_moderate_stays_critical_when_contrast_fails() -> None:
+    cfg = deepcopy(_cfg())
+    cfg["boundary"]["no_document_severity"] = "moderate"
+    metrics = _no_document_metrics()
+    metrics["contrast"] = _m(
+        {"p5": 10.0, "p5_p95_range": 20.0, "rms_contrast": 10.0}
+    )
+    decision = decide(metrics, cfg, True)
+    assert decision.status == STATUS_RECAPTURE
+    assert decision.reason_codes == ["NO_DOCUMENT_FOUND", "LOW_CONTRAST"]
+    no_document = next(
+        entry for entry in decision.trace if entry["reason_code"] == "NO_DOCUMENT_FOUND"
+    )
+    assert no_document["severity"] == "critical"

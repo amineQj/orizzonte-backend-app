@@ -8,17 +8,19 @@ biometrics, identity matching, or fraud detection.
 
 The module is **not production-ready**:
 
-- threshold layouts start as `UNCALIBRATED` unless an owner explicitly runs
-  `calibrate --apply` after a documented review;
+- threshold layouts start as `UNCALIBRATED`;
+- `calibrate --apply` only marks a layout `PROVISIONAL`, even after a documented review;
+- only a human edit of `thresholds.json` can set `CALIBRATED`;
 - the automated tests use only synthetic `SPECIMEN / TEST` images;
 - the checked-in defaults have not been validated as production thresholds;
 - synthetic pass results do not prove reliability on real phone photos.
 
 Do not treat a green test run as evidence of production accuracy. Calibration requires
-real, consented specimens and an agreed label set. The current `id_card/default` defaults
-were adjusted from aggregate metrics of a local sample of real 720x1280 phone photos and
-from a Youden-J sharpness review. Only that layout is marked `CALIBRATED` in the working
-copy; every other layout remains `UNCALIBRATED`.
+real, consented specimens and an agreed label set. The current `id_card/default` and
+`driving_license/card` layouts were adjusted from aggregate metrics of a local sample of
+real phone photos and from a Youden-J sharpness review. They are marked `PROVISIONAL`
+because those sample-specific adjustments have not been independently validated; every
+layout remains non-production.
 
 ## Profiles and layouts
 
@@ -64,7 +66,12 @@ Set-Location "C:\Users\THINKPAD\Desktop\orizzonte-backend-app\verification_agent
 ..\.venv\Scripts\python.exe -m image_quality calibrate C:\path\to\folder --profile id_card
 ..\.venv\Scripts\python.exe -m image_quality calibrate C:\path\to\folder --profile id_card --layout default --apply
 ..\.venv\Scripts\python.exe -m image_quality evaluate C:\path\to\folder --labels C:\path\to\labels.csv --profile id_card
+..\.venv\Scripts\python.exe -m image_quality evaluate C:\path\to\folder --labels C:\path\to\labels.csv --profile id_card --cv 5 --seed 20261110
+..\.venv\Scripts\python.exe -m image_quality evaluate C:\path\to\folder --labels C:\path\to\labels.csv --profile id_card --what-if boundary.no_document_severity=moderate
 ```
+
+`--what-if` is repeatable and never writes the threshold file. The key may be relative to
+the selected layout (`blur.laplacian_variance_poor`) or a full dotted path.
 
 Alternatively, from `verification_agent/`:
 
@@ -103,8 +110,11 @@ unreadable `NEEDS_RECAPTURE` for a non-sharpness reason and is excluded from the
 sharpness comparison. The per-metric counts show the actual analyzed sample. The
 diagnostic reports the acceptable p5/median, the needs-recapture p95, whether the two
 distributions overlap, and the Youden-J-optimal threshold. The direction
-(higher-is-better or lower-is-better) is chosen from the labels. Example from the local
-18-analyzed-image sample:
+(higher-is-better or lower-is-better) is chosen from the labels. `calibrate` also reports
+`metric_separation_n_by_class` after excluding unreadable images and marks every
+suggestion with `exploratory: true` when any human class has fewer than 30 analyzed
+images. A top-level `selection_bias_warning` appears in the same condition. Example from
+the local 18-analyzed-image sample:
 
 ```json
 "metric_separation": {
@@ -119,7 +129,8 @@ distributions overlap, and the Youden-J-optimal threshold. The direction
     "sensitivity": 1.0,
     "specificity": 0.9,
     "acceptable_count": 7,
-    "needs_recapture_count": 10
+    "needs_recapture_count": 10,
+    "exploratory": true
   }
 }
 ```
@@ -129,42 +140,70 @@ target. A human owner still reviews and sets the actual soft/hard bands. Labels 
 cannot be read produce `metric_separation_error` while the distribution report still
 succeeds.
 
-`calibrate --apply` deliberately marks the selected profile/layout `CALIBRATED`, records
-the sample/analyzed/failed counts under its `calibration` metadata, and writes the
-threshold file. Without `--output`, it writes the default `thresholds.json`, which
-`analyze` and `evaluate` read by default. `--output PATH` writes an alternate threshold
-file instead and requires `--apply`; an alternate file is not used by `evaluate` unless
-it is copied over the default file. The command reports
-`"thresholds_calibrated": true`, `"thresholds_modified": true`, and
+`calibrate --apply` deliberately marks the selected profile/layout `PROVISIONAL` and
+records the sample/analyzed/failed counts plus `calibration_metadata` (per-class sample
+counts and group count) in the threshold file. Without `--output`, it writes the default
+`thresholds.json`, which `analyze` and `evaluate` read by default. `--output PATH` writes
+an alternate threshold file instead and requires `--apply`; an alternate file is not used
+by `evaluate` unless it is copied over the default file. The command reports
+`"thresholds_calibrated": false`, `"thresholds_modified": true`, and
 `"thresholds_written": true` after a successful write. It does not invent threshold
 values from unlabeled images: the owner must review and set the values first, then apply
-the calibration decision.
+the provisional calibration decision. Only a human edit can change the layout to
+`CALIBRATED`; legacy `thresholds_calibrated: true` files migrate in memory to
+`PROVISIONAL` without deleting any threshold value.
 
-`evaluate` reads a local labels CSV with this exact shape:
+`evaluate` reads a local labels CSV with this shape:
 
 ```csv
-filename,label
-good.jpg,ACCEPTABLE_QUALITY
-blurry.jpg,NEEDS_RECAPTURE
+filename,label,group
+good.jpg,ACCEPTABLE_QUALITY,person-001
+blurry.jpg,NEEDS_RECAPTURE,person-001
 ```
 
 `filename` must be a plain name inside the evaluated folder; path traversal is rejected.
-`label` must be one of the three statuses. `evaluate` prints a confusion matrix,
-false-acceptance count/rate, false-rejection count/rate, and an
-`acceptable_but_poor` count. An unreadable or no-document image is counted as
-`NEEDS_RECAPTURE`.
+`label` must be one of the three statuses. The optional third `group` column keeps
+multiple photos of the same person or document in one cross-validation fold.
+
+`evaluate` prints a confusion matrix, false-acceptance count/rate, false-rejection
+count/rate, and an `acceptable_but_poor` count. An unreadable or no-document image is
+counted as `NEEDS_RECAPTURE`. It also prints a `gate` block that treats human
+`NEEDS_RECAPTURE` as the positive class and compares two operating policies:
+
+- `pass_if_poor`: `ACCEPTABLE_QUALITY` and `POOR_QUALITY` pass;
+- `strict`: only `ACCEPTABLE_QUALITY` passes.
+
+Each policy reports counts, rates with 95% Wilson intervals, sensitivity, specificity,
+false-positive/false-negative rates, and Youden J. A denominator of zero produces
+`null`, not a fabricated zero. `no_document_by_label` counts `NO_DOCUMENT_FOUND` per
+human label.
+
+`evaluate --cv K --seed S` runs grouped K-fold cross-validation. The defaults are
+`K=5` and `S=20261110` when the flag is used without a value. Folds never split a group:
+the explicit `group` column is preferred, then the filename stem. Cross-validation
+refuses to run when any status class has fewer than K samples or when an explicit group
+column has fewer than K groups. When the group column is absent and filename stems yield
+fewer than K groups, the command falls back to stratified folds and emits
+`cv_group_fallback: stratified_folds`.
+In each fold, soft thresholds are derived from the training rows only, applied in
+memory, and evaluated on the held-out rows. The output includes the in-sample gate, the
+pooled out-of-fold gate, fold sizes, group leakage status, and the derived thresholds by
+fold. Thresholds are never written by cross-validation.
 
 Before a label is treated as missing, `evaluate` normalizes filename differences such as
 spaces, punctuation, brackets, Unicode width, and case. A unique match is analyzed and
-reported in `warnings`:
+reported only as the generic warning code `normalized_filename_match`:
 
 ```json
-"warnings": ["normalized: id_card_(5).jpeg -> id_card_5.jpeg"]
+"warnings": ["normalized_filename_match"]
 ```
 
-If normalization finds no match, the label is listed in `missing_files`; if it finds more
-than one candidate, it is listed in `ambiguous_files`. Both are counted as unreadable
-rather than silently discarded.
+If normalization finds no match, `missing_files_count` is incremented; if it finds more
+than one candidate, `ambiguous_files_count` is incremented. Both are counted as
+unreadable rather than silently discarded. Filenames are not included in the JSON. The
+`boundary_diagnostics` block reports `detector_used` and candidate rejection counts
+(`aspect_ratio`, `area_ratio`, `solidity`, `confidence`, `border_contact`,
+`none_found`) split by human label.
 
 ## Output contract
 
@@ -199,9 +238,11 @@ Each metric has this shape:
 - `heuristic`: an estimate that can be wrong;
 - `unknown`: not enough reliable information; it never rejects an image on its own.
 
-`processing_time_ms` is the measured in-process analysis time in milliseconds with three decimal places.
-`thresholds_calibrated` is `true` only when the selected layout's `calibration_status` is
-`CALIBRATED` in `thresholds.json`.
+`processing_time_ms` is the measured in-process analysis time in milliseconds with three
+decimal places for `analyze`. `evaluate` omits timing so the same `--cv` seed produces
+byte-for-byte identical JSON. `thresholds_calibrated` is
+`true` only when the selected layout's `calibration_status` is `CALIBRATED` in
+`thresholds.json`; `PROVISIONAL` keeps it `false`.
 
 Reason codes are stable strings:
 
@@ -217,8 +258,8 @@ data, or an identity claim.
 
 The values below are the actual defaults in `thresholds.json`. They are provisional;
 layout status is tracked per profile/layout. `id_card/default` and
-`driving_license/card` are currently `CALIBRATED` from owner applies, and the other
-layouts are `UNCALIBRATED`.
+`driving_license/card` are currently `PROVISIONAL` from automated calibration, and the
+other layouts are `UNCALIBRATED`.
 `D` = `id_card/default`; `LC` = `driving_license/card`;
 `LP/VP` = `driving_license/paper` and `vehicle_registration/paper`;
 `S` = `selfie/default`.
@@ -266,6 +307,7 @@ layouts are `UNCALIBRATED`.
 | `glare.max_background_fraction` | 0.25 | 0.25 | 0.25 |
 | `glare.max_near_saturated_fraction` | 0.30 | 0.30 | 0.30 |
 | `boundary.min_confidence` | 0.55 | 0.45 | 0.65 |
+| `boundary.no_document_severity` | `critical` | `critical` | `critical` |
 | `boundary.min_analysis_side_px` | 64 | 64 | 64 |
 | `boundary.fallback_min_area_ratio` | 0.25 | 0.25 | 0.25 |
 | `boundary.fallback_confidence` | 0.72 | 0.72 | 0.72 |
@@ -326,7 +368,7 @@ easy specimen out of the both-soft warning zone. A would-be critical `BLURRY` is
 downgraded to moderate when the same image is `DARK` or `LOW_CONTRAST`, because those
 conditions depress both sharpness indicators.
 
-For `driving_license/card`, the calibrated soft bands are `20 <= laplacian <= 74.2` and
+For `driving_license/card`, the provisional soft bands are `20 <= laplacian <= 74.2` and
 `2000 <= tenengrad <= 6400.5`, with severe edges at 20 and 2000. Driving-license captures
 are sharper and higher-contrast than ID cards, so the same AND rule is used with
 profile-specific edges.
@@ -394,19 +436,23 @@ is **not** proof of a document.
 Reported fields include `valid`, `area_ratio`, `bounding_box_working`, `quad_working`,
 `border_sides_touching`, `cropping_suspected`, `cropping_confirmed`, `aspect_ratio`,
 `aspect_ratio_in_range`, `edge_density`, `frame_border_ambiguous`,
-`no_document_signals`, `candidate_count`, `solidity`, `detector_used`, and `warning`.
-`detector_used` is one of `contour_quadrilateral`, `otsu_bright_region_quadrilateral`,
-`otsu_bright_region_min_area_rect`, `hough_lines`, `center_crop_fallback`, `full_frame`, or
-`no_candidate`.
+`no_document_signals`, `candidate_count`, `solidity`, `detector_used`, `warning`, and
+`rejection_counts`. `detector_used` is one of `contour_quadrilateral`,
+`otsu_bright_region_quadrilateral`, `otsu_bright_region_min_area_rect`, `hough_lines`,
+`center_crop_fallback`, `full_frame`, or `no_candidate`. `rejection_counts` records
+candidate-level failures for `aspect_ratio`, `area_ratio`, `solidity`, `confidence`,
+`border_contact`, and `none_found`.
 
 - Validity requires the candidate confidence to meet `min_confidence`.
 - Cropping is suspected when the quadrilateral touches at least `cropping_min_sides`
   image borders. It is confirmed only for a valid boundary with confidence at least
   `cropping_min_confidence`, and then adds `CROPPED` as **critical**.
-- `NO_DOCUMENT_FOUND` is **critical** only when at least two independent no-document
-  signals are present: no reliable quadrilateral, an area below
-  `min_candidate_area_ratio`, an edge density below `no_document_min_edge_density`, or
-  no candidate contours at all.
+- `NO_DOCUMENT_FOUND` appears when at least two independent no-document signals are
+  present: no reliable quadrilateral, an area below `min_candidate_area_ratio`, an edge
+  density below `no_document_min_edge_density`, or no candidate contours at all. Its
+  severity is `critical` by default. If `boundary.no_document_severity` is `moderate`, it
+  becomes moderate and the status can downgrade to `POOR_QUALITY` only when sharpness,
+  contrast, and resolution all pass; otherwise it remains critical.
 - `min_analysis_side_px` prevents boundary conclusions on very small working images.
 - `aspect_ratio_range` is checked only for card layouts. Paper layouts report
   `aspect_ratio_in_range: null` because paper sizes vary. It is diagnostic only: aspect
@@ -441,7 +487,7 @@ The decision engine is rule-based:
 | Document resolution below profile minimum | critical | `LOW_RES` |
 | Either sharpness indicator strictly below its severe threshold, without dark or low-contrast exposure | critical | `BLURRY` |
 | Cropping confirmed | critical | `CROPPED` |
-| At least two no-document signals | critical | `NO_DOCUMENT_FOUND` |
+| At least two no-document signals | critical by default; configurable moderate | `NO_DOCUMENT_FOUND` |
 | Both sharpness indicators inside their soft bands | moderate | `BLURRY` |
 | Mean brightness below dark threshold, or dark clipping with mean below 100 | moderate | `DARK` |
 | High mean brightness, high bright clipping, and low contrast | moderate | `OVEREXPOSED` |
@@ -473,23 +519,39 @@ Without `--apply`, `calibrate` only reports distributions and never edits thresh
 reports the selected layout's `thresholds_calibrated` value and
 `thresholds_modified: false`.
 
-`calibrate --apply` marks that profile/layout `CALIBRATED`, records the sample counts
-under its `calibration` metadata, and writes the threshold file. `--output PATH` writes an
-alternate file instead; it requires `--apply`. After a successful write the command
-reports `thresholds_calibrated: true`, `thresholds_modified: true`, and
-`thresholds_written: true`. The top-level `calibration_status` and `notes` remain
-informational; the per-layout status is authoritative. A synthetic test run is not a
-calibration event and must not be used to change the status.
+`calibrate --apply` marks that profile/layout `PROVISIONAL`, records the sample counts,
+per-class counts, and group count under `calibration` / `calibration_metadata`, and
+writes the threshold file. `--output PATH` writes an alternate file instead; it requires
+`--apply`. After a successful write the command reports `thresholds_calibrated: false`,
+`thresholds_modified: true`, and `thresholds_written: true`. The top-level
+`calibration_status` and `notes` remain informational; the per-layout status is
+authoritative. A synthetic test run is not a calibration event and must not be used to
+change the status.
+
+The three statuses are:
+
+- `UNCALIBRATED`: no calibration evidence;
+- `PROVISIONAL`: automated calibration output exists but is not human-validated;
+- `CALIBRATED`: a human owner explicitly set the status after documented review.
+
+Legacy files with `thresholds_calibrated: true` are migrated in memory to `PROVISIONAL`
+and `thresholds_calibrated: false`; threshold values are never deleted or rewritten by
+the migration.
 
 Recommended calibration process:
 
 1. Collect real, consented specimens with clear ownership and usage permission.
 2. Label each with the agreed status and reason codes.
 3. Run `calibrate` and inspect the distributions and `metric_separation`.
-4. Run `evaluate` against the labels and review false acceptances and false rejections.
+4. Run `evaluate --cv 5` and review in-sample and pooled out-of-fold gate metrics.
 5. Have a human owner review and document every threshold change.
-6. Only then run `calibrate ... --apply` to mark the layout `CALIBRATED`.
-7. Re-run `evaluate` and keep the report with the threshold version.
+6. Run `calibrate ... --apply` to record a `PROVISIONAL` calibration.
+7. A human owner may then edit `calibration_status` to `CALIBRATED` only after an
+   independent validation. No automated command does that.
+8. Re-run `evaluate` and keep the report with the threshold version.
+
+Use `evaluate --what-if KEY=VALUE` to test a threshold change in memory before editing
+the file. The override is echoed under `what_if` and is never written.
 
 Never copy, display, print, upload, or commit real specimens. Report aggregate metrics
 only.
@@ -499,11 +561,11 @@ only.
 - Images are decoded and processed entirely in memory.
 - The input file is never modified.
 - No debug images, resized copies, crops, or intermediate files are written.
-- `analyze` and `calibrate` output contains no file path, file name, image content,
-  base64, OCR text, face data, or identity data.
-- `evaluate` intentionally includes label filenames in `warnings`, `missing_files`, and
-  `ambiguous_files` for local reconciliation only. These are filename strings, never image
-  content or paths.
+- `analyze`, `calibrate`, and `evaluate` output contains no file path, file name, image
+  content, base64, OCR text, face data, or identity data.
+- `evaluate` reports only aggregate counts (`missing_files_count`,
+  `ambiguous_files_count`, `normalized_matches_count`) and generic warning codes; it does
+  not echo label filenames or group names.
 - There is no OCR, no face detection, no biometrics, no identity comparison, and no fraud
   decision.
 - There is no network access during analysis. The test suite blocks `socket.socket` and
@@ -578,10 +640,14 @@ documents and contain no personal data. The no-document generator uses a fixed s
 Coverage includes: good document, blurry, low resolution, dark, overexposed, uneven
 light, low contrast, glare, cropped, rotated, no document, tiny image, EXIF orientation,
 WebP saved with a `.jpg` name, grayscale, corrupt, empty, over-megapixel, selfie quality
-only, structured errors, schema validation, analyze/calibrate path privacy, evaluate
-filename reconciliation, calibrated-threshold persistence, Youden-J metric separation,
-soft-blur threshold bands, false-acceptance/false-rejection math, file immutability,
-no debug files, and blocked network sockets.
+only, structured errors, schema validation, path/privacy checks for analyze, calibrate,
+and evaluate, gate metrics with Wilson intervals and Youden J, grouped and stratified
+cross-validation determinism, group-leakage prevention, missing/ambiguous aggregate
+counts, provisional calibration status and legacy migration, in-memory `--what-if`,
+boundary rejection diagnostics, `no_document_severity`, calibrated-threshold
+persistence, Youden-J metric separation, soft-blur threshold bands,
+false-acceptance/false-rejection math, file immutability, no debug files, and blocked
+network sockets.
 
 A 12-megapixel timing benchmark is available from `verification_agent/ocr_lab`:
 
@@ -596,10 +662,11 @@ a synthetic local measurement, not a production latency guarantee.
 
 ## Limitations and non-goals
 
-- Defaults are not production-validated. The `id_card/default` values were adjusted from
-  aggregate metrics of one local sample of real 720x1280 phone photos and a Youden-J
-  sharpness review. That layout is marked `CALIBRATED` by the owner, but this is still a
-  provisional sample-specific calibration; the other layouts remain `UNCALIBRATED`.
+- Defaults are not production-validated. The `id_card/default` and
+  `driving_license/card` values were adjusted from aggregate metrics of local samples
+  and a Youden-J sharpness review. They are marked `PROVISIONAL`; this is still a
+  sample-specific calibration, not independent validation. The other layouts remain
+  `UNCALIBRATED`.
 - No production validation has been performed for any real ID, licence, or registration.
 - Boundary detection is heuristic; rounded corners, plastic sleeves, holograms, UI
   overlays, white backgrounds, and textured backgrounds can cause false positives or

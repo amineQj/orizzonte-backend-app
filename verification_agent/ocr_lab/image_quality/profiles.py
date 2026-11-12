@@ -25,6 +25,7 @@ DEFAULT_LAYOUTS: dict[str, str] = {
 }
 
 DOCUMENT_PROFILES = frozenset({"id_card", "driving_license", "vehicle_registration"})
+CALIBRATION_STATUSES = ("UNCALIBRATED", "PROVISIONAL", "CALIBRATED")
 
 _COMMON_KEYS = (
     "calibration_status",
@@ -117,7 +118,7 @@ def _validate_layout(profile: str, layout: str, data: dict[str, Any]) -> None:
     for key in required:
         if key not in data:
             raise ProfileError("invalid_configuration")
-    if data["calibration_status"] not in ("UNCALIBRATED", "CALIBRATED"):
+    if data["calibration_status"] not in CALIBRATION_STATUSES:
         raise ProfileError("invalid_configuration")
     if not isinstance(data["document_analysis"], bool):
         raise ProfileError("invalid_configuration")
@@ -133,6 +134,43 @@ def _validate_layout(profile: str, layout: str, data: dict[str, Any]) -> None:
         raise ProfileError("invalid_configuration")
     if data["document_analysis"]:
         _validate_glare_guard(data)
+        boundary = data.get("boundary")
+        if not isinstance(boundary, dict):
+            raise ProfileError("invalid_configuration")
+        severity = boundary.get("no_document_severity", "critical")
+        if severity not in ("critical", "moderate"):
+            raise ProfileError("invalid_configuration")
+
+
+def _migrate_legacy_calibration(data: dict[str, Any]) -> None:
+    """Move legacy booleans to an explicit calibration_status.
+
+    Older files used ``thresholds_calibrated: true`` to mean that a calibration
+    run had written thresholds.  That is provisional evidence, never a human
+    validation, so it must not remain a CALIBRATED claim.
+    """
+
+    if data.get("thresholds_calibrated") is True:
+        data["calibration_status"] = "PROVISIONAL"
+        data["thresholds_calibrated"] = False
+
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict):
+        return
+    for profile_data in profiles.values():
+        if not isinstance(profile_data, dict):
+            continue
+        layouts = profile_data.get("layouts")
+        if not isinstance(layouts, dict):
+            continue
+        for layout_data in layouts.values():
+            if not isinstance(layout_data, dict):
+                continue
+            if layout_data.get("thresholds_calibrated") is True:
+                layout_data["calibration_status"] = "PROVISIONAL"
+                layout_data["thresholds_calibrated"] = False
+            elif "calibration_status" not in layout_data:
+                layout_data["calibration_status"] = "UNCALIBRATED"
 
 
 def load_thresholds(path: str | Path | None = None) -> dict[str, Any]:
@@ -145,6 +183,7 @@ def load_thresholds(path: str | Path | None = None) -> dict[str, Any]:
 
     if not isinstance(data, dict) or "profiles" not in data:
         raise ProfileError("invalid_configuration")
+    _migrate_legacy_calibration(data)
     profiles = data["profiles"]
     if not isinstance(profiles, dict):
         raise ProfileError("invalid_configuration")

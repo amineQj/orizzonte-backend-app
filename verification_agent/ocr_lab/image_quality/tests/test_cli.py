@@ -155,6 +155,11 @@ def test_calibrate_missing_folder_is_structured(tmp_path) -> None:
 
 def test_calibrate_apply_writes_alternate_threshold_file(tmp_path) -> None:
     _write_image(tmp_path, "good.png", s.good_document_bytes())
+    labels = tmp_path / "labels.csv"
+    labels.write_text(
+        f"filename,label,group\ngood.png,{STATUS_ACCEPTABLE},group-a\n",
+        encoding="utf-8",
+    )
     output = tmp_path / "calibrated-thresholds.json"
     completed = _run_cli(
         "calibrate",
@@ -167,7 +172,7 @@ def test_calibrate_apply_writes_alternate_threshold_file(tmp_path) -> None:
     )
     assert completed.returncode == 0, completed.stdout
     result = json.loads(completed.stdout)
-    assert result["thresholds_calibrated"] is True
+    assert result["thresholds_calibrated"] is False
     assert result["thresholds_modified"] is True
     assert result["thresholds_written"] is True
     assert result["analyzed_count"] == 1
@@ -176,9 +181,12 @@ def test_calibrate_apply_writes_alternate_threshold_file(tmp_path) -> None:
 
     data = json.loads(output.read_text(encoding="utf-8"))
     layout = data["profiles"]["id_card"]["layouts"]["default"]
-    assert layout["calibration_status"] == "CALIBRATED"
+    assert layout["calibration_status"] == "PROVISIONAL"
     assert layout["calibration"]["sample_count"] == 1
     assert layout["calibration"]["analyzed_count"] == 1
+    assert layout["calibration_metadata"]["class_counts"][STATUS_ACCEPTABLE] == 1
+    assert layout["calibration_metadata"]["group_count"] == 1
+    assert layout["calibration_metadata"]["status"] == "PROVISIONAL"
 
 
 def test_calibrate_output_requires_apply(tmp_path) -> None:
@@ -219,13 +227,13 @@ def test_calibrate_apply_then_evaluate_reads_calibrated_thresholds(
         apply=True,
         thresholds_path=source,
     )
-    assert calibrated["thresholds_calibrated"] is True
+    assert calibrated["thresholds_calibrated"] is False
     assert calibrated["thresholds_modified"] is True
     assert calibrated["thresholds_written"] is True
 
     monkeypatch.setattr(cli, "default_thresholds_path", lambda: source)
     evaluated = cli.evaluate_folder(tmp_path, labels, "id_card")
-    assert evaluated["thresholds_calibrated"] is True
+    assert evaluated["thresholds_calibrated"] is False
     assert evaluated["unreadable_count"] == 0
 
 
@@ -345,11 +353,10 @@ def test_evaluate_normalizes_filename_mismatch(tmp_path) -> None:
     )
     assert completed.returncode == 0
     result = json.loads(completed.stdout)
-    assert result["warnings"] == [
-        "normalized: specimen-(5).png -> specimen_5.png"
-    ]
-    assert result["missing_files"] == []
-    assert result["ambiguous_files"] == []
+    assert result["warnings"] == ["normalized_filename_match"]
+    assert result["normalized_matches_count"] == 1
+    assert result["missing_files_count"] == 0
+    assert result["ambiguous_files_count"] == 0
     assert result["unreadable_count"] == 0
     assert result["confusion_matrix"][STATUS_ACCEPTABLE][STATUS_ACCEPTABLE] == 1
 
@@ -371,8 +378,8 @@ def test_evaluate_lists_missing_files_after_normalization(tmp_path) -> None:
     )
     assert completed.returncode == 0
     result = json.loads(completed.stdout)
-    assert result["missing_files"] == ["missing.png"]
-    assert result["warnings"] == []
+    assert result["missing_files_count"] == 1
+    assert result["warnings"] == ["missing_files"]
     assert result["unreadable_count"] == 1
     assert result["confusion_matrix"][STATUS_ACCEPTABLE][STATUS_RECAPTURE] == 1
 
@@ -395,5 +402,6 @@ def test_evaluate_counts_loaded_no_document_as_unreadable(tmp_path) -> None:
     assert completed.returncode == 0
     result = json.loads(completed.stdout)
     assert result["unreadable_count"] == 1
-    assert result["missing_files"] == []
+    assert result["missing_files_count"] == 0
     assert result["confusion_matrix"][STATUS_RECAPTURE][STATUS_RECAPTURE] == 1
+    assert result["gate"]["no_document_by_label"][STATUS_RECAPTURE] == 1

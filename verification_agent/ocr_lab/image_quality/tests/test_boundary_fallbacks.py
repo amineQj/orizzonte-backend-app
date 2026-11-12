@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter
+
+import cv2
+import numpy as np
+
 from image_quality import analyze_bytes
+from image_quality.metrics.boundaries import _adaptive_threshold_rectangle_candidate
 from image_quality.output_schema import STATUS_ACCEPTABLE, STATUS_RECAPTURE
 
 from . import synthetic as s
@@ -77,6 +83,37 @@ def test_no_document_gradient_does_not_get_center_crop_fallback() -> None:
     assert boundary["no_document_signals"] >= 2
     assert result["status"] == STATUS_RECAPTURE
     assert "NO_DOCUMENT_FOUND" in result["reason_codes"]
+
+
+def test_adaptive_threshold_rectangle_uses_card_shaped_contours(monkeypatch) -> None:
+    threshold_mask = np.zeros((200, 300), dtype=np.uint8)
+    cv2.rectangle(threshold_mask, (40, 40), (260, 160), 255, thickness=-1)
+    threshold_args = []
+
+    def adaptive_threshold(gray, *args):
+        threshold_args.append(args)
+        return threshold_mask
+
+    monkeypatch.setattr(cv2, "adaptiveThreshold", adaptive_threshold)
+    candidate = _adaptive_threshold_rectangle_candidate(
+        np.zeros((200, 300), dtype=np.uint8),
+        width=300,
+        height=200,
+        edge_density=0.1,
+        cfg={"fallback_confidence": 0.72},
+        tolerance=2.0,
+        rejection_counts=Counter(),
+    )
+
+    assert threshold_args == [
+        (255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 17, 1)
+    ]
+    assert candidate is not None
+    assert candidate["method"] == "adaptive_threshold_rectangle"
+    assert candidate["candidate_count"] == 1
+    assert candidate["solidity"] > 0.85
+    _x, _y, box_width, box_height = candidate["bbox"]
+    assert 1.3 <= max(box_width, box_height) / min(box_width, box_height) <= 2.0
 
 
 def test_driving_license_cut_border_high_contrast_uses_full_frame_warning() -> None:
