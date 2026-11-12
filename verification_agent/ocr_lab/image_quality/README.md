@@ -1,10 +1,12 @@
-# ORIZZONTE image-quality module (Phase 2)
+# ORIZZONTE image-quality and document-classification module (Phases 2–3)
 
 ## Status
 
-This is a standalone, offline **image-quality gate**. It decides whether a photo is
-technically suitable for a later OCR stage. It does not perform OCR, face detection,
-biometrics, identity matching, or fraud detection.
+This is a standalone, offline **image-quality gate** and **upload-slot consistency
+classifier**. The gate decides whether a photo is technically suitable for a later OCR
+stage. The classifier then checks whether caller-supplied OCR text is consistent with the
+declared slot. It does not bundle an OCR engine and does not perform biometrics, identity
+matching, or fraud detection.
 
 The module is **not production-ready**:
 
@@ -13,7 +15,9 @@ The module is **not production-ready**:
 - only a human edit of `thresholds.json` can set `CALIBRATED`;
 - the automated tests use only synthetic `SPECIMEN / TEST` images;
 - the checked-in defaults have not been validated as production thresholds;
-- synthetic pass results do not prove reliability on real phone photos.
+- synthetic pass results do not prove reliability on real phone photos;
+- classification depends on OCR quality and public-title keywords, so a match is not
+  proof of authenticity or document validity.
 
 Do not treat a green test run as evidence of production accuracy. Calibration requires
 real, consented specimens and an agreed label set. The current `id_card/default` and
@@ -29,11 +33,49 @@ layout remains non-production.
 | `id_card` | `default` | yes | Card-shaped ID document |
 | `driving_license` | `card`, `paper` | yes | Default layout is `card`; `paper` is the older paper format |
 | `vehicle_registration` | `paper` | yes | Paper document |
-| `selfie` | `default` | no | Quality metrics only; no face detection, no biometrics |
+| `selfie` | `default` | no | Quality metrics; optional Haar face presence for slot consistency; no biometrics |
 
 The actual backend upload slots are `selfie`, `id_card_front`, `id_card_back`,
 `driving_license`, and `vehicle_registration`. The module profiles are independent of
-those slot names and do not modify the Django application.
+those slot names and do not modify the Django application. Phase 3 maps the slots to
+document types in `document_layouts.json`.
+
+## Document classification (Phase 3)
+
+The classifier runs only after the quality gate returns `ACCEPTABLE_QUALITY` or
+`POOR_QUALITY`. A `NEEDS_RECAPTURE` result blocks classification with
+`QUALITY_GATE_BLOCKED`.
+
+The caller supplies OCR text from the later OCR stage; this module does not run
+Tesseract or any other OCR engine:
+
+```python
+from image_quality import classify_after_quality
+
+result = classify_after_quality(quality_result, "id_card_front", ocr_text=text)
+```
+
+Text is normalized for accents, punctuation, and whitespace, then matched against
+configurable public-title keywords in `document_layouts.json`. The default entries are:
+
+| Type | Public keywords |
+| --- | --- |
+| `id_card` | `REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE`, `CARTE NATIONALE D'IDENTITE` |
+| `driving_license` | `PERMIS DE CONDUIRE`, `REPUBLIQUE ALGERIENNE` |
+| `vehicle_registration` | `CERTIFICAT D'IMMATRICULATION`, `CARTE GRISE` |
+| `selfie` | no text keywords; face presence only |
+
+Each keyword has a configurable weight. A detected type must reach `min_confidence`; a
+close second candidate is treated as ambiguous. The result contains `declared_slot`,
+`expected_type`, `detected_type`, `confidence`, `consistency` (`MATCH`, `MISMATCH`, or
+`UNKNOWN`), `decision` (`MATCH`, `NEEDS_REVIEW`, or `QUALITY_GATE_BLOCKED`),
+`manual_review_required`, and a machine-readable `reason_code`.
+
+A mismatch is always `NEEDS_REVIEW`, never an automatic rejection. Low confidence, no
+keyword, conflicting keywords, a missing selfie face, and an unavailable face detector
+also return `NEEDS_REVIEW`. Selfie classification uses only optional OpenCV Haar face
+presence; if the cascade is unavailable, the result is `NEEDS_REVIEW`. No colour,
+texture, appearance, biometric, or identity matching is used.
 
 ## Install and test (from `verification_agent/`)
 
@@ -566,8 +608,11 @@ only.
 - `evaluate` reports only aggregate counts (`missing_files_count`,
   `ambiguous_files_count`, `normalized_matches_count`) and generic warning codes; it does
   not echo label filenames or group names.
-- There is no OCR, no face detection, no biometrics, no identity comparison, and no fraud
+- There is no bundled OCR engine, no biometrics, no identity comparison, and no fraud
   decision.
+- Classification consumes caller-supplied OCR text and returns only public keyword
+  matches, not the raw OCR text. A selfie slot may run an optional OpenCV Haar
+  face-presence check; no face data or embeddings are stored.
 - There is no network access during analysis. The test suite blocks `socket.socket` and
   confirms analysis still succeeds.
 - The CLI prints JSON only to stdout. Structured errors do not include tracebacks or
@@ -587,6 +632,8 @@ verification_agent/
     analyzer.py                     # orchestration and structured errors
     cli.py                          # analyze / calibrate / evaluate
     decision_engine.py              # rule-based decision and trace
+    document_classification.py      # Phase 3 slot/type keyword consistency
+    document_layouts.json           # configurable public keywords and slot map
     errors.py                       # structured error categories
     image_loader.py                 # format detection, EXIF, in-memory decode
     normalization.py                # bounded working copy, no upscaling
@@ -621,7 +668,9 @@ bytes/path
   -> metrics (resolution, sharpness, exposure, contrast, glare, geometry)
   -> decision engine (critical / moderate / acceptable)
   -> schema validation
-  -> versioned JSON
+  -> versioned quality JSON
+  -> classify_after_quality (usable statuses only)
+  -> slot/type consistency JSON (MATCH / NEEDS_REVIEW)
 ```
 
 ## Tests
@@ -646,8 +695,10 @@ cross-validation determinism, group-leakage prevention, missing/ambiguous aggreg
 counts, provisional calibration status and legacy migration, in-memory `--what-if`,
 boundary rejection diagnostics, `no_document_severity`, calibrated-threshold
 persistence, Youden-J metric separation, soft-blur threshold bands,
-false-acceptance/false-rejection math, file immutability, no debug files, and blocked
-network sockets.
+false-acceptance/false-rejection math, Phase 3 keyword classification for every slot,
+slot/type mismatch to `NEEDS_REVIEW`, low confidence, no keyword, ambiguous keywords,
+selfie face fallback, configurable layouts, quality-gate blocking, OCR-text privacy,
+file immutability, no debug files, and blocked network sockets.
 
 A 12-megapixel timing benchmark is available from `verification_agent/ocr_lab`:
 
@@ -678,10 +729,12 @@ a synthetic local measurement, not a production latency guarantee.
 - Blur indicators are contrast-sensitive; dark or low-contrast images can look blurry.
 - 90-degree and 180-degree orientation are reported as unknown.
 - Perspective is a simple side-length imbalance, not a full lens/pose model.
-- The selfie profile measures quality only. It performs no face detection, no face
-  comparison, no liveness check, and no biometric analysis.
+- The selfie profile measures quality and may use optional Haar face presence for slot
+  consistency. It performs no face comparison, liveness check, or biometric analysis.
+- Classification depends on OCR text quality and public-title keywords. It does not
+  verify authenticity, extract personal fields, or prove document validity.
 - The module does not decide identity, authenticity, fraud, or document validity.
 - The module is not wired into Django, models, serializers, endpoints, settings, auth,
   database, `.env`, frontend, or backend `requirements.txt`.
-- Phase 2 stops here. OCR and Phase 3 work must not be started without the exact next
-  instruction.
+- Phase 3 stops at slot/type consistency. OCR execution, biometrics, identity matching,
+  and fraud decisions remain out of scope.

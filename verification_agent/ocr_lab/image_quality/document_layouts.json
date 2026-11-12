@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0.0",
+  "notes": "Public document titles only. No personal data. Keywords are matched against OCR text supplied by the caller.",
+  "min_confidence": 0.6,
+  "min_confidence_margin": 0.2,
+  "slots": {
+    "selfie": {
+      "expected_type": "selfie",
+      "mode": "face"
+    },
+    "id_card_front": {
+      "expected_type": "id_card",
+      "mode": "text"
+    },
+    "id_card_back": {
+      "expected_type": "id_card",
+      "mode": "text"
+    },
+    "driving_license": {
+      "expected_type": "driving_license",
+      "mode": "text"
+    },
+    "vehicle_registration": {
+      "expected_type": "vehicle_registration",
+      "mode": "text"
+    }
+  },
+  "types": {
+    "id_card": {
+      "keywords": [
+        {
+          "text": "REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE",
+          "weight": 2.0
+        },
+        {
+          "text": "CARTE NATIONALE D'IDENTITE",
+          "weight": 3.0
+        }
+      ]
+    },
+    "driving_license": {
+      "keywords": [
+        {
+          "text": "PERMIS DE CONDUIRE",
+          "weight": 3.0
+        },
+        {
+          "text": "REPUBLIQUE ALGERIENNE",
+          "weight": 1.0
+        }
+      ]
+    },
+    "vehicle_registration": {
+      "keywords": [
+        {
+          "text": "CERTIFICAT D'IMMATRICULATION",
+          "weight": 3.0
+        },
+        {
+          "text": "CARTE GRISE",
+          "weight": 2.0
+        }
+      ]
+    },
+    "selfie": {
+      "keywords": []
+    }
+  }
+}
