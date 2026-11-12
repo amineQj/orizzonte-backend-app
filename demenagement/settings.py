@@ -255,3 +255,18 @@ AI_AUTO_APPROVE = os.environ.get('AI_AUTO_APPROVE', 'False') == 'True'
 AI_AUTO_APPROVE_MIN_CONFIDENCE = float(
     os.environ.get('AI_AUTO_APPROVE_MIN_CONFIDENCE', '0.90')
 )
+
+
+# ─────────────────────────────────────────────────────────────
+#  Image-quality / document-classification bridge
+# ─────────────────────────────────────────────────────────────
+# The standalone module has its own virtual environment with OpenCV/numpy.
+# Leave empty to auto-detect verification_agent/.venv in the project.
+VERIFICATION_AGENT_PYTHON = os.environ.get('VERIFICATION_AGENT_PYTHON', '')
+VERIFICATION_AGENT_TIMEOUT_SECONDS = float(
+    os.environ.get('VERIFICATION_AGENT_TIMEOUT_SECONDS', '30')
+)
+# Useful when a deployment deliberately wants classification without OCR.
+VERIFICATION_AGENT_DISABLE_OCR = (
+    os.environ.get('VERIFICATION_AGENT_DISABLE_OCR', 'False') == 'True'
+)

@@ -9,6 +9,7 @@ Driver (role driver):
     PATCH  /api/drivers/me/profile/
     POST   /api/drivers/me/documents/
     POST   /api/drivers/me/submit/
+    POST   /api/verification/check/
 
 Documents (owner, boss or agent):
     GET    /api/drivers/<id>/documents/<type>/
@@ -27,6 +28,7 @@ AI agent (X-Agent-Key):
 """
 from django.urls import path
 
+from .verification_views import VerificationCheckView
 from .views import (
     AgentDriverDetailView,
     AgentDriverDocumentView,
@@ -47,6 +49,7 @@ urlpatterns = [
     path("drivers/me/profile/", DriverProfileView.as_view(), name="driver-profile"),
     path("drivers/me/documents/", DriverDocumentUploadView.as_view(), name="driver-document-upload"),
     path("drivers/me/submit/", DriverSubmitView.as_view(), name="driver-submit"),
+    path("verification/check/", VerificationCheckView.as_view(), name="verification-check"),
 
     # ── Boss ────────────────────────────────────────────────────────────
     path("drivers/pending/", PendingDriversView.as_view(), name="driver-pending"),

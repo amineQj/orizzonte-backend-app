@@ -158,6 +158,16 @@ class DocumentUploadSerializer(serializers.Serializer):
     file = serializers.FileField()
 
 
+class VerificationCheckSerializer(serializers.Serializer):
+    """Multipart body of ``POST /api/verification/check/``."""
+
+    slot = serializers.ChoiceField(
+        choices=DOCUMENT_TYPE_CHOICES,
+        error_messages={"invalid_choice": "Unknown document slot."},
+    )
+    file = serializers.FileField()
+
+
 # ─────────────────────────────────────────────────────────────
 #  Boss-facing
 # ─────────────────────────────────────────────────────────────
