@@ -6,14 +6,14 @@
     "id_card": {
       "layouts": {
         "default": {
-          "calibration_status": "PROVISIONAL",
+          "calibration_status": "CALIBRATED",
           "document_analysis": true,
           "max_megapixels": 40.0,
           "max_working_side": 1600,
           "min_original_width": 640,
           "min_original_height": 480,
           "min_original_megapixels": 0.3,
-          "min_document_width": 400,
+          "min_document_width": 500,
           "min_document_height": 400,
           "min_document_megapixels": 0.24,
           "evaluation_region": {
@@ -39,7 +39,7 @@
           "contrast": {
             "p5_p95_min_range": 90.0,
             "rms_min": 30.0,
-            "p5_min": 20.0,
+            "p5_min": 40.0,
             "rms_secondary_min": 20.0
           },
           "glare": {
@@ -73,26 +73,13 @@
           },
           "rotation": {
             "max_abs_angle_deg": 5.0,
-            "max_perspective_ratio": 0.25
+            "max_perspective_ratio": 0.08
           },
           "calibration": {
             "method": "aggregate_distribution_review",
-            "sample_count": 197,
-            "analyzed_count": 194,
-            "failed_count": 3
-          },
-          "calibration_metadata": {
-            "method": "aggregate_distribution_review",
-            "sample_count": 197,
-            "analyzed_count": 194,
-            "failed_count": 3,
-            "class_counts": {
-              "ACCEPTABLE_QUALITY": 156,
-              "POOR_QUALITY": 4,
-              "NEEDS_RECAPTURE": 38
-            },
-            "group_count": 198,
-            "status": "PROVISIONAL"
+            "sample_count": 40,
+            "analyzed_count": 29,
+            "failed_count": 11
           }
         }
       }
