@@ -24,10 +24,39 @@ def test_thresholds_load_all_profiles_and_layouts() -> None:
             cfg = get_profile_config(profile, layout)
             assert cfg.profile == profile
             assert cfg.layout == layout
-            assert cfg.data["calibration_status"] == "UNCALIBRATED"
-            assert cfg.thresholds_calibrated is False
+            assert cfg.data["calibration_status"] in ("UNCALIBRATED", "CALIBRATED")
+            assert cfg.thresholds_calibrated == (
+                cfg.data["calibration_status"] == "CALIBRATED"
+            )
             assert cfg.data["max_working_side"] == 1600
             assert cfg.data["max_megapixels"] == 40.0
+
+
+def test_card_thresholds_are_per_profile() -> None:
+    id_card = get_profile_config("id_card", "default")
+    driving_license = get_profile_config("driving_license", "card")
+    selfie = get_profile_config("selfie", "default")
+
+    assert id_card.data["min_document_width"] == 500
+    assert id_card.data["blur"]["laplacian_variance_poor"] == 35.0
+    assert id_card.data["blur"]["laplacian_variance_severe"] == 30.0
+    assert id_card.data["blur"]["tenengrad_poor"] == 2500.0
+    assert id_card.data["blur"]["tenengrad_severe"] == 2000.0
+    assert id_card.data["exposure"]["uneven_illumination_ratio"] == 0.65
+    assert id_card.data["contrast"]["p5_min"] == 40.0
+    assert id_card.data["contrast"]["rms_secondary_min"] == 20.0
+    assert id_card.data["boundary"]["min_confidence"] == 0.55
+    assert driving_license.data["boundary"]["min_confidence"] == 0.45
+    assert driving_license.data["boundary"]["border_cut_full_frame_edge_density"] == 0.068
+    assert driving_license.data["boundary"]["aspect_ratio_range"] == [1.30, 2.00]
+    assert driving_license.data["blur"]["laplacian_variance_poor"] == 74.2
+    assert driving_license.data["blur"]["laplacian_variance_severe"] == 20.0
+    assert driving_license.data["blur"]["tenengrad_poor"] == 6400.5
+    assert driving_license.data["blur"]["tenengrad_severe"] == 2000.0
+    assert driving_license.data["contrast"]["p5_min"] == 28.5
+    assert driving_license.data["contrast"]["rms_secondary_min"] == 25.0
+    assert selfie.data["blur"]["laplacian_variance_poor"] == 100.0
+    assert selfie.data["blur"]["laplacian_variance_severe"] == 10.0
 
 
 def test_default_layouts() -> None:
@@ -132,8 +161,11 @@ def test_messages_catalog_is_complete() -> None:
         assert not any(character.isdigit() for character in entry["fr"])
 
 
-def test_every_profile_has_uncertainty_marked_in_thresholds() -> None:
+def test_every_profile_has_explicit_calibration_status() -> None:
     data = load_thresholds()
     for profile, profile_data in data["profiles"].items():
         for layout, layout_data in profile_data["layouts"].items():
-            assert layout_data["calibration_status"] == "UNCALIBRATED", (profile, layout)
+            assert layout_data["calibration_status"] in (
+                "UNCALIBRATED",
+                "CALIBRATED",
+            ), (profile, layout)

@@ -137,6 +137,12 @@ def _analyze_source(
             metrics["perspective"] = compute_perspective_metric(boundary, cfg.data["rotation"])
 
         decision = decide(metrics, cfg.data, cfg.document_analysis)
+        error_category = None
+        if (
+            decision.status == STATUS_RECAPTURE
+            and "NO_DOCUMENT_FOUND" in decision.reason_codes
+        ):
+            error_category = "no_document_found"
         result = {
             "schema_version": SCHEMA_VERSION,
             "algorithm_version": ALGORITHM_VERSION,
@@ -150,7 +156,7 @@ def _analyze_source(
             "metrics": {name: metric.to_dict() for name, metric in metrics.items()},
             "reason_codes": decision.reason_codes,
             "decision_trace": decision.trace,
-            "error_category": None,
+            "error_category": error_category,
         }
         validation_errors = validate_output(result)
         if validation_errors:

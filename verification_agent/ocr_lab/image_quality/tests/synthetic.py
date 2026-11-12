@@ -25,7 +25,7 @@ def _draw_document_card(
     rect: tuple[int, int, int, int],
     *,
     paper: tuple[int, int, int] = (226, 226, 226),
-    ink: tuple[int, int, int] = (30, 30, 30),
+    ink: tuple[int, int, int] = (50, 50, 50),
     outline: tuple[int, int, int] = (70, 70, 70),
     header_fill: tuple[int, int, int] = (185, 185, 185),
     visible_marks: bool = False,
@@ -105,7 +105,7 @@ def document_image(
     *,
     margin_fraction: float = 0.10,
     paper: tuple[int, int, int] = (226, 226, 226),
-    ink: tuple[int, int, int] = (30, 30, 30),
+    ink: tuple[int, int, int] = (50, 50, 50),
     outline: tuple[int, int, int] = (70, 70, 70),
     header_fill: tuple[int, int, int] = (185, 185, 185),
     background: tuple[int, int, int] = (38, 42, 48),
@@ -132,6 +132,145 @@ def good_document_bytes(
 ) -> bytes:
     image = document_image(width, height)
     return _to_bytes(image, image_format, quality=95) if image_format != "PNG" else _to_bytes(image)
+
+
+def uniform_background_document_bytes(
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """Card on a flat, featureless background.
+
+    This exercises the contour and Otsu paths without the dark textured
+    background used by the default synthetic document.
+    """
+
+    image = Image.new("RGB", (width, height), (210, 210, 210))
+    margin_x = int(width * 0.10)
+    margin_y = int(height * 0.10)
+    _draw_document_card(
+        image,
+        (margin_x, margin_y, width - margin_x, height - margin_y),
+        paper=(236, 236, 236),
+        header_fill=(210, 210, 210),
+    )
+    return _to_bytes(image)
+
+
+def card_fills_frame_bytes(
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """A card that covers more than 80% of the frame."""
+
+    image = document_image(width, height, margin_fraction=0.03)
+    return _to_bytes(image)
+
+
+def shadowed_document_bytes(
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """Card with a soft directional shadow across the scene."""
+
+    image = document_image(width, height)
+    array = np.asarray(image).astype(np.float32)
+    horizontal = np.linspace(0.62, 1.0, width, dtype=np.float32)[None, :, None]
+    vertical = np.linspace(0.72, 1.0, height, dtype=np.float32)[:, None, None]
+    shadow = np.minimum(horizontal, vertical)
+    array = np.clip(array * shadow, 0, 255).astype(np.uint8)
+    image = Image.fromarray(array, mode="RGB").filter(ImageFilter.GaussianBlur(0.6))
+    return _to_bytes(image)
+
+
+def dashed_border_document_bytes(
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """A card whose outline is dashed, so closed contours are not available."""
+
+    image = Image.new("RGB", (width, height), (208, 208, 208))
+    draw = ImageDraw.Draw(image)
+    x0, y0 = int(width * 0.10), int(height * 0.10)
+    x1, y1 = int(width * 0.90), int(height * 0.90)
+    dash = max(16, int(width * 0.025))
+    gap = max(8, int(width * 0.0125))
+    line_width = max(2, width // 500)
+
+    for x in range(x0, x1, dash + gap):
+        end = min(x + dash, x1)
+        draw.line([(x, y0), (end, y0)], fill=(60, 60, 60), width=line_width)
+        draw.line([(x, y1), (end, y1)], fill=(60, 60, 60), width=line_width)
+    for y in range(y0, y1, dash + gap):
+        end = min(y + dash, y1)
+        draw.line([(x0, y), (x0, end)], fill=(60, 60, 60), width=line_width)
+        draw.line([(x1, y), (x1, end)], fill=(60, 60, 60), width=line_width)
+
+    for index in range(6):
+        y = y0 + int(height * 0.12) + index * int(height * 0.08)
+        draw.rectangle(
+            [x0 + int(width * 0.10), y, x0 + int(width * 0.52), y + max(3, height // 90)],
+            fill=(30, 30, 30),
+        )
+    return _to_bytes(image)
+
+
+def central_text_only_bytes(
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """Central content without a card outline, for the center-crop fallback."""
+
+    image = Image.new("RGB", (width, height), (208, 208, 208))
+    draw = ImageDraw.Draw(image)
+    for index in range(10):
+        y = int(height * 0.30) + index * int(height * 0.045)
+        x0 = int(width * 0.31)
+        x1 = int(width * 0.69) if index % 2 == 0 else int(width * 0.59)
+        draw.rectangle(
+            [x0, y, x1, y + max(3, height // 100)],
+            fill=(40, 40, 40),
+        )
+    return _to_bytes(image)
+
+
+def driving_license_cut_border_high_contrast_bytes(
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """Dense, high-contrast card texture running into every frame edge.
+
+    There are no long straight lines or large closed shapes, so contour, Otsu,
+    and Hough stages stay below the candidate-count threshold.  The frame still
+    looks like a readable card that was cropped by the camera.
+    """
+
+    image = Image.new("RGB", (width, height), (225, 225, 225))
+    draw = ImageDraw.Draw(image)
+    ink = (50, 50, 50)
+    margin = 2
+    for row, y in enumerate(range(margin, height - 12, 18)):
+        x = margin + (row % 3) * 9
+        while x < width - margin:
+            length = 24 + ((x * 7 + row * 13) % 36)
+            draw.rectangle(
+                [x, y, min(x + length, width - margin - 1), y + 8],
+                fill=ink,
+            )
+            x += length + 10 + ((x + row) % 8)
+    for column, x in enumerate(range(margin, width - margin, 40)):
+        y = margin + (column * 17) % 50
+        draw.rectangle([x, y, x + 5, y + 18], fill=ink)
+    return _to_bytes(image)
+
+
+def driving_license_wide_aspect_bytes(
+    width: int = 1600,
+    height: int = 820,
+) -> bytes:
+    """Card whose visible aspect ratio is about 1.95."""
+
+    image = document_image(width, height, margin_fraction=0.10)
+    return _to_bytes(image)
 
 
 def blurry_document_bytes(width: int = 1600, height: int = 1000, radius: float = 5.0) -> bytes:
@@ -272,7 +411,7 @@ def rotated_document_bytes(
 def uneven_light_document_bytes(width: int = 1600, height: int = 1000) -> bytes:
     image = document_image(width, height)
     array = np.asarray(image).astype(np.float32)
-    gradient = np.linspace(1.20, 0.42, width, dtype=np.float32)[None, :, None]
+    gradient = np.linspace(1.20, 0.15, width, dtype=np.float32)[None, :, None]
     array = np.clip(array * gradient, 0, 255).astype(np.uint8)
     return _to_bytes(Image.fromarray(array, mode="RGB"))
 

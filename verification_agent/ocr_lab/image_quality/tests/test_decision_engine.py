@@ -28,7 +28,9 @@ def _base_metrics() -> dict[str, MetricResult]:
         "sharpness_tenengrad": _m(12000.0),
         "brightness": _m(180.0),
         "clipping": _m({"dark_fraction": 0.0, "bright_fraction": 0.0}),
-        "contrast": _m({"p5_p95_range": 180.0, "rms_contrast": 50.0}),
+        "contrast": _m(
+            {"p5_p95_range": 180.0, "rms_contrast": 50.0, "p5": 220.0}
+        ),
         "uneven_illumination": _m({"ratio": 0.2}, nature="heuristic", confidence=0.65),
         "glare": _m(
             {
@@ -89,23 +91,136 @@ def test_both_severe_sharpness_indicators_are_needs_recapture() -> None:
     assert decision.trace[0]["severity"] == "critical"
 
 
-def test_one_poor_sharpness_indicator_is_only_poor_quality() -> None:
+def test_one_soft_sharpness_indicator_alone_is_acceptable() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(50.0)
+    metrics["sharpness_laplacian"] = _m(32.0)
     metrics["sharpness_tenengrad"] = _m(5000.0)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_ACCEPTABLE
+    assert decision.reason_codes == []
+
+
+def test_one_severe_indicator_alone_needs_recapture() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(5.0)
+    metrics["sharpness_tenengrad"] = _m(5000.0)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_RECAPTURE
+    assert decision.reason_codes == ["BLURRY"]
+    assert decision.trace[0]["severity"] == "critical"
+
+
+def test_soft_blur_band_is_poor_quality() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(32.0)
+    metrics["sharpness_tenengrad"] = _m(2400.0)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_POOR
     assert decision.reason_codes == ["BLURRY"]
     assert decision.trace[0]["severity"] == "moderate"
 
 
-def test_one_severe_indicator_alone_is_only_poor_quality() -> None:
+def test_easy_readable_specimen_metrics_are_acceptable() -> None:
+    # Regression for id_card_test_easy.jpeg: Laplacian 35.6451 is just above
+    # the narrowed soft upper edge (35) and Tenengrad 2480.5907 is soft.  Only
+    # one indicator is soft, so the AND rule accepts the image.
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(5.0)
-    metrics["sharpness_tenengrad"] = _m(5000.0)
+    metrics["sharpness_laplacian"] = _m(35.6451)
+    metrics["sharpness_tenengrad"] = _m(2480.5907)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_ACCEPTABLE
+    assert decision.reason_codes == []
+
+
+def test_soft_blur_boundary_is_inclusive() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(30.0)
+    metrics["sharpness_tenengrad"] = _m(2000.0)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_POOR
-    assert "BLURRY" in decision.reason_codes
+    assert decision.trace[0]["severity"] == "moderate"
+
+
+def test_two_hard_blur_indicators_below_soft_band_need_recapture() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(29.9)
+    metrics["sharpness_tenengrad"] = _m(1999.9)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_RECAPTURE
+    assert decision.reason_codes == ["BLURRY"]
+    assert decision.trace[0]["severity"] == "critical"
+
+
+def test_tenengrad_hard_indicator_alone_needs_recapture() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(50.0)
+    metrics["sharpness_tenengrad"] = _m(1999.9)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_RECAPTURE
+    assert decision.reason_codes == ["BLURRY"]
+    assert decision.trace[0]["severity"] == "critical"
+    assert decision.trace[0]["metrics"] == ["sharpness_tenengrad"]
+
+
+def test_low_contrast_suppresses_critical_blur() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(20.0)
+    metrics["sharpness_tenengrad"] = _m(1000.0)
+    metrics["contrast"] = _m({"p5_p95_range": 40.0, "rms_contrast": 10.0})
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_POOR
+    assert "LOW_CONTRAST" in decision.reason_codes
+    blur = next(
+        entry for entry in decision.trace if entry["reason_code"] == "BLURRY"
+    )
+    assert blur["severity"] == "moderate"
+
+
+def test_p5_secondary_contrast_signal_is_moderate() -> None:
+    metrics = _base_metrics()
+    metrics["contrast"] = _m(
+        {"p5": 35.0, "p5_p95_range": 180.0, "rms_contrast": 50.0}
+    )
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_POOR
+    assert decision.reason_codes == ["LOW_CONTRAST"]
+    assert decision.trace[0]["severity"] == "moderate"
+
+
+def test_rms_secondary_contrast_signal_is_moderate() -> None:
+    cfg = deepcopy(_cfg())
+    cfg["contrast"]["p5_p95_min_range"] = 10.0
+    cfg["contrast"]["rms_min"] = 10.0
+    metrics = _base_metrics()
+    metrics["contrast"] = _m(
+        {"p5": 80.0, "p5_p95_range": 180.0, "rms_contrast": 19.0}
+    )
+    decision = decide(metrics, cfg, True)
+    assert decision.status == STATUS_POOR
+    assert decision.reason_codes == ["LOW_CONTRAST"]
+    assert decision.trace[0]["severity"] == "moderate"
+
+
+def test_secondary_contrast_thresholds_are_strict() -> None:
+    cfg = deepcopy(_cfg())
+    cfg["contrast"]["p5_p95_min_range"] = 10.0
+    cfg["contrast"]["rms_min"] = 10.0
+    metrics = _base_metrics()
+    metrics["contrast"] = _m(
+        {"p5": 40.0, "p5_p95_range": 180.0, "rms_contrast": 20.0}
+    )
+    decision = decide(metrics, cfg, True)
+    assert decision.status == STATUS_ACCEPTABLE
+    assert decision.reason_codes == []
+
+
+def test_sharpness_above_soft_band_is_acceptable() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(35.1)
+    metrics["sharpness_tenengrad"] = _m(2500.1)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_ACCEPTABLE
+    assert decision.reason_codes == []
 
 
 def test_unknown_metric_lowers_confidence_but_does_not_reject_alone() -> None:
@@ -173,7 +288,7 @@ def test_exposure_contrast_glare_rotation_and_perspective_rules() -> None:
 
     uneven = _base_metrics()
     uneven["uneven_illumination"] = _m(
-        {"ratio": 0.6}, nature="heuristic", confidence=0.65
+        {"ratio": 0.7}, nature="heuristic", confidence=0.65
     )
     assert "UNEVEN_LIGHT" in decide(uneven, _cfg(), True).reason_codes
 
@@ -307,5 +422,32 @@ def test_selfie_ignores_document_metrics() -> None:
         confidence=0.9,
     )
     decision = decide(metrics, get_profile_config("selfie").data, False)
+    assert decision.status == STATUS_ACCEPTABLE
+    assert decision.reason_codes == []
+
+
+def test_driving_license_cut_borders_with_high_contrast_are_acceptable() -> None:
+    metrics = _base_metrics()
+    metrics["document_boundary"] = _m(
+        {
+            "valid": True,
+            "cropping_confirmed": False,
+            "no_document_signals": 0,
+            "border_sides_touching": 3,
+            "candidate_count": 0,
+            "edge_density": 0.08,
+            "warning": "border_cut_but_high_contrast",
+        },
+        nature="heuristic",
+        confidence=0.9,
+    )
+    metrics["contrast"] = _m(
+        {"p5": 35.0, "p5_p95_range": 120.0, "rms_contrast": 30.0}
+    )
+    decision = decide(
+        metrics,
+        get_profile_config("driving_license", "card").data,
+        True,
+    )
     assert decision.status == STATUS_ACCEPTABLE
     assert decision.reason_codes == []

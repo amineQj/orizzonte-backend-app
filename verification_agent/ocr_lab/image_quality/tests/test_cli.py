@@ -68,6 +68,7 @@ def test_analyze_invalid_profile_is_structured() -> None:
 def test_calibrate_reports_distributions_without_filenames(tmp_path) -> None:
     _write_image(tmp_path, "good.png", s.good_document_bytes())
     _write_image(tmp_path, "blurry.png", s.blurry_document_bytes())
+    (tmp_path / "labels.csv").write_text("filename,label\n", encoding="utf-8")
     completed = _run_cli("calibrate", str(tmp_path), "--profile", "id_card")
     assert completed.returncode == 0
     result = json.loads(completed.stdout)
@@ -75,13 +76,73 @@ def test_calibrate_reports_distributions_without_filenames(tmp_path) -> None:
     assert result["image_count"] == 2
     assert result["analyzed_count"] == 2
     assert result["failed_count"] == 0
-    assert result["thresholds_calibrated"] is False
+    assert isinstance(result["thresholds_calibrated"], bool)
     assert result["thresholds_modified"] is False
+    assert result["thresholds_written"] is False
     sharpness = result["metrics"]["sharpness_laplacian"]
     assert sharpness["count"] == 2
     assert sharpness["min"] <= sharpness["median"] <= sharpness["max"]
+    assert result["metric_separation"] == {}
     assert "good.png" not in completed.stdout
     assert "blurry.png" not in completed.stdout
+
+
+def test_metric_separation_uses_youden_and_percentiles() -> None:
+    separation = cli._metric_separation(
+        [100.0, 110.0, 120.0, 130.0],
+        [10.0, 20.0, 30.0, 40.0],
+    )
+    assert separation is not None
+    assert separation["direction"] == "higher_is_better"
+    assert separation["youden_j"] == 1.0
+    assert separation["overlap"] is False
+    assert separation["suggested_threshold"] == 70.0
+    assert separation["acceptable_p5"] == 101.5
+    assert separation["acceptable_median"] == 115.0
+    assert separation["needs_recapture_p95"] == 38.5
+
+
+def test_calibrate_metric_separation_uses_folder_labels(
+    tmp_path, monkeypatch
+) -> None:
+    for name in ("good-a.png", "good-b.png", "bad-a.png", "bad-b.png"):
+        _write_image(tmp_path, name, b"not analyzed because analyze_path is mocked")
+    (tmp_path / "labels.csv").write_text(
+        "\n".join(
+            [
+                "filename,label",
+                f"good-a.png,{STATUS_ACCEPTABLE}",
+                f"good-b.png,{STATUS_ACCEPTABLE}",
+                f"bad-a.png,{STATUS_RECAPTURE}",
+                f"bad-b.png,{STATUS_RECAPTURE}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_analyze(path, profile, layout=None, **kwargs):
+        if Path(path).name.startswith("good"):
+            lap, ten = 100.0, 3000.0
+        else:
+            lap, ten = 20.0, 1500.0
+        return {
+            "error_category": None,
+            "metrics": {
+                "sharpness_laplacian": {"nature": "measured", "value": lap},
+                "sharpness_tenengrad": {"nature": "measured", "value": ten},
+            },
+        }
+
+    monkeypatch.setattr(cli, "analyze_path", fake_analyze)
+    result = cli.calibrate_folder(tmp_path, "id_card")
+    assert result["metric_separation_scope"] == "analyzed_images_only"
+    separation = result["metric_separation"]
+    assert separation["sharpness_laplacian"]["youden_j"] == 1.0
+    assert separation["sharpness_tenengrad"]["youden_j"] == 1.0
+    assert separation["sharpness_laplacian"]["suggested_threshold"] == 60.0
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "good-a.png" not in serialized
+    assert "bad-a.png" not in serialized
 
 
 def test_calibrate_missing_folder_is_structured(tmp_path) -> None:
@@ -90,6 +151,82 @@ def test_calibrate_missing_folder_is_structured(tmp_path) -> None:
     assert completed.returncode == 2
     result = json.loads(completed.stdout)
     assert result["error_category"] == "folder_not_found"
+
+
+def test_calibrate_apply_writes_alternate_threshold_file(tmp_path) -> None:
+    _write_image(tmp_path, "good.png", s.good_document_bytes())
+    output = tmp_path / "calibrated-thresholds.json"
+    completed = _run_cli(
+        "calibrate",
+        str(tmp_path),
+        "--profile",
+        "id_card",
+        "--apply",
+        "--output",
+        str(output),
+    )
+    assert completed.returncode == 0, completed.stdout
+    result = json.loads(completed.stdout)
+    assert result["thresholds_calibrated"] is True
+    assert result["thresholds_modified"] is True
+    assert result["thresholds_written"] is True
+    assert result["analyzed_count"] == 1
+    assert output.is_file()
+    assert str(output) not in completed.stdout
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    layout = data["profiles"]["id_card"]["layouts"]["default"]
+    assert layout["calibration_status"] == "CALIBRATED"
+    assert layout["calibration"]["sample_count"] == 1
+    assert layout["calibration"]["analyzed_count"] == 1
+
+
+def test_calibrate_output_requires_apply(tmp_path) -> None:
+    _write_image(tmp_path, "good.png", s.good_document_bytes())
+    output = tmp_path / "calibrated-thresholds.json"
+    completed = _run_cli(
+        "calibrate",
+        str(tmp_path),
+        "--profile",
+        "id_card",
+        "--output",
+        str(output),
+    )
+    assert completed.returncode == 2
+    result = json.loads(completed.stdout)
+    assert result["error_category"] == "invalid_configuration"
+    assert not output.exists()
+
+
+def test_calibrate_apply_then_evaluate_reads_calibrated_thresholds(
+    tmp_path, monkeypatch
+) -> None:
+    _write_image(tmp_path, "good.png", s.good_document_bytes())
+    labels = tmp_path / "labels.csv"
+    labels.write_text(
+        f"filename,label\ngood.png,{STATUS_ACCEPTABLE}\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "thresholds.json"
+    source.write_text(
+        cli.default_thresholds_path().read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    calibrated = cli.calibrate_folder(
+        tmp_path,
+        "id_card",
+        apply=True,
+        thresholds_path=source,
+    )
+    assert calibrated["thresholds_calibrated"] is True
+    assert calibrated["thresholds_modified"] is True
+    assert calibrated["thresholds_written"] is True
+
+    monkeypatch.setattr(cli, "default_thresholds_path", lambda: source)
+    evaluated = cli.evaluate_folder(tmp_path, labels, "id_card")
+    assert evaluated["thresholds_calibrated"] is True
+    assert evaluated["unreadable_count"] == 0
 
 
 def test_evaluate_reports_confusion_matrix_and_rates(tmp_path) -> None:
@@ -189,3 +326,74 @@ def test_false_acceptance_and_false_rejection_math(tmp_path, monkeypatch) -> Non
     assert result["false_rejection"] == 1
     assert result["false_rejection_rate"] == 0.5
     assert result["acceptable_but_poor"] == 0
+
+
+def test_evaluate_normalizes_filename_mismatch(tmp_path) -> None:
+    _write_image(tmp_path, "specimen_5.png", s.good_document_bytes())
+    labels = tmp_path / "labels.csv"
+    labels.write_text(
+        f"filename,label\nspecimen-(5).png,{STATUS_ACCEPTABLE}\n",
+        encoding="utf-8",
+    )
+    completed = _run_cli(
+        "evaluate",
+        str(tmp_path),
+        "--labels",
+        str(labels),
+        "--profile",
+        "id_card",
+    )
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["warnings"] == [
+        "normalized: specimen-(5).png -> specimen_5.png"
+    ]
+    assert result["missing_files"] == []
+    assert result["ambiguous_files"] == []
+    assert result["unreadable_count"] == 0
+    assert result["confusion_matrix"][STATUS_ACCEPTABLE][STATUS_ACCEPTABLE] == 1
+
+
+def test_evaluate_lists_missing_files_after_normalization(tmp_path) -> None:
+    _write_image(tmp_path, "good.png", s.good_document_bytes())
+    labels = tmp_path / "labels.csv"
+    labels.write_text(
+        f"filename,label\nmissing.png,{STATUS_ACCEPTABLE}\n",
+        encoding="utf-8",
+    )
+    completed = _run_cli(
+        "evaluate",
+        str(tmp_path),
+        "--labels",
+        str(labels),
+        "--profile",
+        "id_card",
+    )
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["missing_files"] == ["missing.png"]
+    assert result["warnings"] == []
+    assert result["unreadable_count"] == 1
+    assert result["confusion_matrix"][STATUS_ACCEPTABLE][STATUS_RECAPTURE] == 1
+
+
+def test_evaluate_counts_loaded_no_document_as_unreadable(tmp_path) -> None:
+    _write_image(tmp_path, "no-document.png", s.no_document_bytes())
+    labels = tmp_path / "labels.csv"
+    labels.write_text(
+        f"filename,label\nno-document.png,{STATUS_RECAPTURE}\n",
+        encoding="utf-8",
+    )
+    completed = _run_cli(
+        "evaluate",
+        str(tmp_path),
+        "--labels",
+        str(labels),
+        "--profile",
+        "id_card",
+    )
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["unreadable_count"] == 1
+    assert result["missing_files"] == []
+    assert result["confusion_matrix"][STATUS_RECAPTURE][STATUS_RECAPTURE] == 1

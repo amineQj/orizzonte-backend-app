@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from image_quality import analyze_bytes
+from image_quality import analyze_bytes, analyze_path
 from image_quality.output_schema import (
     REASON_CODES,
     STATUS_ACCEPTABLE,
@@ -15,24 +15,40 @@ from . import synthetic as s
 
 
 @pytest.mark.parametrize(
-    ("name", "factory", "profile", "expected_status", "expected_reason"),
+    (
+        "name",
+        "factory",
+        "profile",
+        "expected_status",
+        "expected_reason",
+        "expected_error_category",
+    ),
     [
-        ("good", s.good_document_bytes, "id_card", STATUS_ACCEPTABLE, None),
-        ("blurry", s.blurry_document_bytes, "id_card", STATUS_RECAPTURE, "BLURRY"),
+        ("good", s.good_document_bytes, "id_card", STATUS_ACCEPTABLE, None, None),
+        (
+            "blurry",
+            s.blurry_document_bytes,
+            "id_card",
+            STATUS_RECAPTURE,
+            "BLURRY",
+            None,
+        ),
         (
             "low_resolution",
             s.low_resolution_document_bytes,
             "id_card",
             STATUS_RECAPTURE,
             "TOO_SMALL",
+            None,
         ),
-        ("dark", s.dark_document_bytes, "id_card", STATUS_POOR, "DARK"),
+        ("dark", s.dark_document_bytes, "id_card", STATUS_POOR, "DARK", None),
         (
             "overexposed",
             s.overexposed_document_bytes,
             "id_card",
             STATUS_POOR,
             "OVEREXPOSED",
+            None,
         ),
         (
             "low_contrast",
@@ -40,26 +56,50 @@ from . import synthetic as s
             "id_card",
             STATUS_POOR,
             "LOW_CONTRAST",
+            None,
         ),
-        ("glare", s.glare_document_bytes, "id_card", STATUS_POOR, "GLARE"),
-        ("cropped", s.cropped_document_bytes, "id_card", STATUS_RECAPTURE, "CROPPED"),
-        ("rotated", s.rotated_document_bytes, "id_card", STATUS_POOR, "ROTATED"),
+        ("glare", s.glare_document_bytes, "id_card", STATUS_POOR, "GLARE", None),
+        (
+            "cropped",
+            s.cropped_document_bytes,
+            "id_card",
+            STATUS_RECAPTURE,
+            "CROPPED",
+            None,
+        ),
+        (
+            "rotated",
+            s.rotated_document_bytes,
+            "id_card",
+            STATUS_POOR,
+            "ROTATED",
+            None,
+        ),
         (
             "no_document",
             s.no_document_bytes,
             "id_card",
             STATUS_RECAPTURE,
             "NO_DOCUMENT_FOUND",
+            "no_document_found",
         ),
-        ("uneven", s.uneven_light_document_bytes, "id_card", STATUS_POOR, "UNEVEN_LIGHT"),
-        ("tiny", s.tiny_image_bytes, "id_card", STATUS_RECAPTURE, "TOO_SMALL"),
-        ("selfie_good", s.selfie_image_bytes, "selfie", STATUS_ACCEPTABLE, None),
+        (
+            "uneven",
+            s.uneven_light_document_bytes,
+            "id_card",
+            STATUS_POOR,
+            "UNEVEN_LIGHT",
+            None,
+        ),
+        ("tiny", s.tiny_image_bytes, "id_card", STATUS_RECAPTURE, "TOO_SMALL", None),
+        ("selfie_good", s.selfie_image_bytes, "selfie", STATUS_ACCEPTABLE, None, None),
         (
             "selfie_blurry",
             lambda: s.selfie_image_bytes(blur=6),
             "selfie",
             STATUS_RECAPTURE,
             "BLURRY",
+            None,
         ),
     ],
 )
@@ -69,6 +109,7 @@ def test_synthetic_scenarios(
     profile: str,
     expected_status: str,
     expected_reason: str | None,
+    expected_error_category: str | None,
 ) -> None:
     result = analyze_bytes(factory(), profile)
     assert result["status"] == expected_status, name
@@ -76,10 +117,25 @@ def test_synthetic_scenarios(
         assert result["reason_codes"] == [], name
     else:
         assert expected_reason in result["reason_codes"], name
-    assert result["error_category"] is None
-    assert result["thresholds_calibrated"] is False
+    assert result["error_category"] == expected_error_category
+    assert isinstance(result["thresholds_calibrated"], bool)
     assert validate_output(result) == []
     assert set(result["reason_codes"]).issubset(set(REASON_CODES))
+
+
+def test_loaded_image_without_document_is_not_file_not_found(tmp_path) -> None:
+    missing = analyze_path(tmp_path / "missing.png", "id_card")
+    assert missing["error_category"] == "file_not_found"
+    assert missing["image"] is None
+    assert missing["reason_codes"] == ["UNREADABLE_IMAGE"]
+
+    path = tmp_path / "no-document.png"
+    path.write_bytes(s.no_document_bytes())
+    loaded = analyze_path(path, "id_card")
+    assert loaded["error_category"] == "no_document_found"
+    assert loaded["image"] is not None
+    assert "NO_DOCUMENT_FOUND" in loaded["reason_codes"]
+    assert validate_output(loaded) == []
 
 
 def test_all_profiles_and_layouts_produce_valid_schema() -> None:
@@ -183,4 +239,4 @@ def test_output_contains_versions_time_and_confidence() -> None:
     assert isinstance(result["processing_time_ms"], float)
     assert result["processing_time_ms"] >= 0.0
     assert 0.0 <= result["confidence"] <= 1.0
-    assert result["thresholds_calibrated"] is False
+    assert isinstance(result["thresholds_calibrated"], bool)

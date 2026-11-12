@@ -126,13 +126,17 @@ def decide(
     ten = metrics.get("sharpness_tenengrad")
     lap_value = _number(lap.value) if _known(lap) else None
     ten_value = _number(ten.value) if _known(ten) else None
+    # ``severe`` is the hard edge and is intentionally strict: values exactly
+    # at the edge are part of the soft band.  ``poor`` is the upper edge of the
+    # soft band; values at or below it are a moderate warning, not a hard
+    # rejection.
     lap_severe = (
         lap_value is not None
-        and lap_value <= float(cfg["blur"]["laplacian_variance_severe"])
+        and lap_value < float(cfg["blur"]["laplacian_variance_severe"])
     )
     ten_severe = (
         ten_value is not None
-        and ten_value <= float(cfg["blur"]["tenengrad_severe"])
+        and ten_value < float(cfg["blur"]["tenengrad_severe"])
     )
     lap_poor = (
         lap_value is not None
@@ -142,26 +146,6 @@ def decide(
         ten_value is not None
         and ten_value <= float(cfg["blur"]["tenengrad_poor"])
     )
-    if lap_severe and ten_severe:
-        add(
-            "BLURRY",
-            "critical",
-            ["sharpness_laplacian", "sharpness_tenengrad"],
-        )
-    elif lap_poor or ten_poor:
-        add(
-            "BLURRY",
-            "moderate",
-            [
-                name
-                for name, condition in (
-                    ("sharpness_laplacian", lap_poor),
-                    ("sharpness_tenengrad", ten_poor),
-                )
-                if condition
-            ],
-        )
-
     if document_analysis:
         boundary = _metric_value(metrics, "document_boundary")
         if isinstance(boundary, dict):
@@ -180,6 +164,8 @@ def decide(
         _number(clipping.get("bright_fraction")) if isinstance(clipping, dict) else None
     )
 
+    dark = False
+    dark_problem = False
     if brightness_value is not None:
         dark = brightness_value < float(cfg["exposure"]["dark_mean"])
         dark_clipped = (
@@ -187,7 +173,8 @@ def decide(
             and dark_fraction > float(cfg["exposure"]["dark_clip_fraction"])
             and brightness_value < 100.0
         )
-        if dark or dark_clipped:
+        dark_problem = dark or dark_clipped
+        if dark_problem:
             add("DARK", "moderate", ["brightness", "clipping"])
 
     contrast = _metric_value(metrics, "contrast")
@@ -197,12 +184,61 @@ def decide(
     rms_contrast = (
         _number(contrast.get("rms_contrast")) if isinstance(contrast, dict) else None
     )
-    low_contrast = (
-        (percentile_range is not None and percentile_range < float(cfg["contrast"]["p5_p95_min_range"]))
-        or (rms_contrast is not None and rms_contrast < float(cfg["contrast"]["rms_min"]))
+    p5_value = _number(contrast.get("p5")) if isinstance(contrast, dict) else None
+    contrast_cfg = cfg["contrast"]
+    p5_min = float(contrast_cfg.get("p5_min", 40.0))
+    rms_secondary_min = float(contrast_cfg.get("rms_secondary_min", 20.0))
+    primary_low_contrast = (
+        (
+            percentile_range is not None
+            and percentile_range < float(contrast_cfg["p5_p95_min_range"])
+        )
+        or (
+            rms_contrast is not None
+            and rms_contrast < float(contrast_cfg["rms_min"])
+        )
     )
+    secondary_low_contrast = (
+        (p5_value is not None and p5_value < p5_min)
+        or (rms_contrast is not None and rms_contrast < rms_secondary_min)
+    )
+    low_contrast = primary_low_contrast or secondary_low_contrast
     if low_contrast:
         add("LOW_CONTRAST", "moderate", ["contrast"])
+
+    # Tenengrad is the primary indicator and can reject on its own.  Laplacian
+    # is a secondary hard veto and otherwise only contributes to the soft
+    # warning when both indicators are in their soft bands.  A single soft
+    # indicator is deliberately accepted.
+    blur_critical = lap_severe or ten_severe
+    blur_soft_band = lap_poor and ten_poor
+    blur_guard = document_analysis and (dark_problem or low_contrast)
+    if blur_critical and not blur_guard:
+        add(
+            "BLURRY",
+            "critical",
+            [
+                name
+                for name, condition in (
+                    ("sharpness_laplacian", lap_severe),
+                    ("sharpness_tenengrad", ten_severe),
+                )
+                if condition
+            ],
+        )
+    elif blur_soft_band or (blur_critical and blur_guard):
+        add(
+            "BLURRY",
+            "moderate",
+            [
+                name
+                for name, condition in (
+                    ("sharpness_laplacian", lap_poor or lap_severe),
+                    ("sharpness_tenengrad", ten_poor or ten_severe),
+                )
+                if condition
+            ],
+        )
 
     if (
         brightness_value is not None

@@ -91,6 +91,12 @@ def _thresholds_path() -> Path:
     return Path(__file__).with_name("thresholds.json")
 
 
+def thresholds_path() -> Path:
+    """Return the default on-disk threshold file used by analyze/evaluate."""
+
+    return _thresholds_path()
+
+
 def _validate_glare_guard(data: dict[str, Any]) -> None:
     glare = data.get("glare")
     if not isinstance(glare, dict):

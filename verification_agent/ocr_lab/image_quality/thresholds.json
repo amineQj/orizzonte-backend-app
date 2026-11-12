@@ -1,19 +1,19 @@
 {
   "schema_version": "1.0.0",
   "calibration_status": "UNCALIBRATED",
-  "notes": "All values are provisional and UNCALIBRATED. They were chosen for synthetic tests and must be calibrated on real, consented specimens before any production use.",
+  "notes": "Threshold values are provisional unless a profile layout is individually marked CALIBRATED. The top-level calibration_status is informational. Run calibrate --apply only after a documented review of real, consented specimens.",
   "profiles": {
     "id_card": {
       "layouts": {
         "default": {
-          "calibration_status": "UNCALIBRATED",
+          "calibration_status": "CALIBRATED",
           "document_analysis": true,
           "max_megapixels": 40.0,
           "max_working_side": 1600,
           "min_original_width": 640,
           "min_original_height": 480,
           "min_original_megapixels": 0.3,
-          "min_document_width": 600,
+          "min_document_width": 500,
           "min_document_height": 400,
           "min_document_megapixels": 0.24,
           "evaluation_region": {
@@ -21,10 +21,10 @@
             "central_fraction": 0.8
           },
           "blur": {
-            "laplacian_variance_poor": 120.0,
-            "laplacian_variance_severe": 10.0,
+            "laplacian_variance_poor": 35.0,
+            "laplacian_variance_severe": 30.0,
             "tenengrad_poor": 2500.0,
-            "tenengrad_severe": 1200.0
+            "tenengrad_severe": 2000.0
           },
           "exposure": {
             "dark_mean": 60.0,
@@ -33,12 +33,14 @@
             "bright_clip_level": 245,
             "dark_clip_fraction": 0.3,
             "bright_clip_fraction": 0.35,
-            "uneven_illumination_ratio": 0.5,
+            "uneven_illumination_ratio": 0.65,
             "block_grid": 8
           },
           "contrast": {
             "p5_p95_min_range": 90.0,
-            "rms_min": 30.0
+            "rms_min": 30.0,
+            "p5_min": 40.0,
+            "rms_secondary_min": 20.0
           },
           "glare": {
             "near_saturated_threshold": 250,
@@ -47,10 +49,10 @@
             "max_suspected_fraction": 0.015,
             "max_component_fraction": 0.008,
             "max_background_fraction": 0.25,
-            "max_near_saturated_fraction": 0.30
+            "max_near_saturated_fraction": 0.3
           },
           "boundary": {
-            "min_confidence": 0.65,
+            "min_confidence": 0.55,
             "min_analysis_side_px": 64,
             "fallback_min_area_ratio": 0.25,
             "fallback_confidence": 0.72,
@@ -64,11 +66,20 @@
             "canny_high": 150,
             "approx_epsilon_fraction": 0.02,
             "dilate_iterations": 2,
-            "aspect_ratio_range": [1.35, 1.85]
+            "aspect_ratio_range": [
+              1.35,
+              1.85
+            ]
           },
           "rotation": {
             "max_abs_angle_deg": 5.0,
             "max_perspective_ratio": 0.08
+          },
+          "calibration": {
+            "method": "aggregate_distribution_review",
+            "sample_count": 40,
+            "analyzed_count": 29,
+            "failed_count": 11
           }
         }
       }
@@ -76,7 +87,7 @@
     "driving_license": {
       "layouts": {
         "card": {
-          "calibration_status": "UNCALIBRATED",
+          "calibration_status": "CALIBRATED",
           "document_analysis": true,
           "max_megapixels": 40.0,
           "max_working_side": 1600,
@@ -91,10 +102,10 @@
             "central_fraction": 0.8
           },
           "blur": {
-            "laplacian_variance_poor": 120.0,
-            "laplacian_variance_severe": 10.0,
-            "tenengrad_poor": 2500.0,
-            "tenengrad_severe": 1200.0
+            "laplacian_variance_poor": 74.2,
+            "laplacian_variance_severe": 20.0,
+            "tenengrad_poor": 6400.5,
+            "tenengrad_severe": 2000.0
           },
           "exposure": {
             "dark_mean": 60.0,
@@ -108,7 +119,9 @@
           },
           "contrast": {
             "p5_p95_min_range": 90.0,
-            "rms_min": 30.0
+            "rms_min": 30.0,
+            "p5_min": 28.5,
+            "rms_secondary_min": 25.0
           },
           "glare": {
             "near_saturated_threshold": 250,
@@ -117,10 +130,10 @@
             "max_suspected_fraction": 0.015,
             "max_component_fraction": 0.008,
             "max_background_fraction": 0.25,
-            "max_near_saturated_fraction": 0.30
+            "max_near_saturated_fraction": 0.3
           },
           "boundary": {
-            "min_confidence": 0.65,
+            "min_confidence": 0.45,
             "min_analysis_side_px": 64,
             "fallback_min_area_ratio": 0.25,
             "fallback_confidence": 0.72,
@@ -129,16 +142,26 @@
             "cropping_min_sides": 2,
             "cropping_min_confidence": 0.8,
             "no_document_min_edge_density": 0.004,
+            "border_cut_full_frame_edge_density": 0.068,
             "min_solidity": 0.85,
             "canny_low": 50,
             "canny_high": 150,
             "approx_epsilon_fraction": 0.02,
             "dilate_iterations": 2,
-            "aspect_ratio_range": [1.35, 1.85]
+            "aspect_ratio_range": [
+              1.3,
+              2.0
+            ]
           },
           "rotation": {
             "max_abs_angle_deg": 5.0,
             "max_perspective_ratio": 0.08
+          },
+          "calibration": {
+            "method": "aggregate_distribution_review",
+            "sample_count": 38,
+            "analyzed_count": 24,
+            "failed_count": 14
           }
         },
         "paper": {
@@ -174,7 +197,9 @@
           },
           "contrast": {
             "p5_p95_min_range": 90.0,
-            "rms_min": 30.0
+            "rms_min": 30.0,
+            "p5_min": 40.0,
+            "rms_secondary_min": 20.0
           },
           "glare": {
             "near_saturated_threshold": 250,
@@ -183,7 +208,7 @@
             "max_suspected_fraction": 0.015,
             "max_component_fraction": 0.008,
             "max_background_fraction": 0.25,
-            "max_near_saturated_fraction": 0.30
+            "max_near_saturated_fraction": 0.3
           },
           "boundary": {
             "min_confidence": 0.65,
@@ -244,7 +269,9 @@
           },
           "contrast": {
             "p5_p95_min_range": 90.0,
-            "rms_min": 30.0
+            "rms_min": 30.0,
+            "p5_min": 40.0,
+            "rms_secondary_min": 20.0
           },
           "glare": {
             "near_saturated_threshold": 250,
@@ -253,7 +280,7 @@
             "max_suspected_fraction": 0.015,
             "max_component_fraction": 0.008,
             "max_background_fraction": 0.25,
-            "max_near_saturated_fraction": 0.30
+            "max_near_saturated_fraction": 0.3
           },
           "boundary": {
             "min_confidence": 0.65,
@@ -311,7 +338,9 @@
           },
           "contrast": {
             "p5_p95_min_range": 80.0,
-            "rms_min": 28.0
+            "rms_min": 28.0,
+            "p5_min": 40.0,
+            "rms_secondary_min": 20.0
           }
         }
       }

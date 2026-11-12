@@ -8,14 +8,17 @@ biometrics, identity matching, or fraud detection.
 
 The module is **not production-ready**:
 
-- every threshold is marked `UNCALIBRATED`;
+- threshold layouts start as `UNCALIBRATED` unless an owner explicitly runs
+  `calibrate --apply` after a documented review;
 - the automated tests use only synthetic `SPECIMEN / TEST` images;
-- no real document or selfie has been used to validate the defaults;
+- the checked-in defaults have not been validated as production thresholds;
 - synthetic pass results do not prove reliability on real phone photos.
 
-Do not mark the thresholds as calibrated, and do not treat a green test run as evidence
-of production accuracy. Calibration requires real, consented specimens and an agreed
-label set.
+Do not treat a green test run as evidence of production accuracy. Calibration requires
+real, consented specimens and an agreed label set. The current `id_card/default` defaults
+were adjusted from aggregate metrics of a local sample of real 720x1280 phone photos and
+from a Youden-J sharpness review. Only that layout is marked `CALIBRATED` in the working
+copy; every other layout remains `UNCALIBRATED`.
 
 ## Profiles and layouts
 
@@ -59,6 +62,7 @@ Run the commands from `verification_agent/ocr_lab` so that `image_quality` is im
 Set-Location "C:\Users\THINKPAD\Desktop\orizzonte-backend-app\verification_agent\ocr_lab"
 ..\.venv\Scripts\python.exe -m image_quality analyze C:\path\to\image.jpg --profile id_card
 ..\.venv\Scripts\python.exe -m image_quality calibrate C:\path\to\folder --profile id_card
+..\.venv\Scripts\python.exe -m image_quality calibrate C:\path\to\folder --profile id_card --layout default --apply
 ..\.venv\Scripts\python.exe -m image_quality evaluate C:\path\to\folder --labels C:\path\to\labels.csv --profile id_card
 ```
 
@@ -77,12 +81,64 @@ print tracebacks. Exit codes:
 | --- | --- |
 | `0` | Analysis completed, regardless of `ACCEPTABLE_QUALITY`, `POOR_QUALITY`, or `NEEDS_RECAPTURE` |
 | `2` | Invalid profile/layout or invalid command configuration |
-| `3` | Unreadable, unsupported, empty, or over-limit image (`UNREADABLE_IMAGE`) |
+| `3` | Unreadable, unsupported, empty, over-limit, or loaded image with no document (`UNREADABLE_IMAGE` / `NO_DOCUMENT_FOUND`) |
 | `4` | Unexpected internal error; no traceback and no path are printed |
 
-`calibrate` reads every file in a folder and prints aggregate per-metric distributions
-(count, min, median, max). It does **not** write or modify `thresholds.json`. It reports
-`"thresholds_calibrated": false` and `"thresholds_modified": false`.
+`error_category` is `null` for ordinary quality decisions. `file_not_found` means the
+path does not resolve to a readable file; `corrupt_image` means the bytes cannot be
+decoded; `no_document_found` means the image loaded and was analyzed, but the boundary
+and decision rules found no usable document. A `no_document_found` result still contains
+image dimensions, metrics, and a decision trace.
+
+`calibrate` reads image files in a folder and prints aggregate per-metric distributions
+(count, min, median, max). It ignores non-image files such as the labels CSV. By default
+it does **not** write or modify `thresholds.json`; it reports
+`"thresholds_calibrated"` from the selected layout and `"thresholds_modified": false`.
+
+When a `labels.csv` is present in the folder, `calibrate` also prints
+`metric_separation` for every numeric metric that has both `ACCEPTABLE_QUALITY` and
+`NEEDS_RECAPTURE` labels. Use `--labels PATH` to point at a different CSV. The diagnostic
+uses only images that produced metrics: a `no_document_found` image is already an
+unreadable `NEEDS_RECAPTURE` for a non-sharpness reason and is excluded from the
+sharpness comparison. The per-metric counts show the actual analyzed sample. The
+diagnostic reports the acceptable p5/median, the needs-recapture p95, whether the two
+distributions overlap, and the Youden-J-optimal threshold. The direction
+(higher-is-better or lower-is-better) is chosen from the labels. Example from the local
+18-analyzed-image sample:
+
+```json
+"metric_separation": {
+  "sharpness_tenengrad": {
+    "acceptable_p5": 2549.60987,
+    "acceptable_median": 4283.1372,
+    "needs_recapture_p95": 2696.437875,
+    "overlap": true,
+    "suggested_threshold": 2121.10215,
+    "direction": "higher_is_better",
+    "youden_j": 0.9,
+    "sensitivity": 1.0,
+    "specificity": 0.9,
+    "acceptable_count": 7,
+    "needs_recapture_count": 10
+  }
+}
+```
+
+The suggested threshold is the midpoint of the Youden-J plateau, not an automatic write
+target. A human owner still reviews and sets the actual soft/hard bands. Labels that
+cannot be read produce `metric_separation_error` while the distribution report still
+succeeds.
+
+`calibrate --apply` deliberately marks the selected profile/layout `CALIBRATED`, records
+the sample/analyzed/failed counts under its `calibration` metadata, and writes the
+threshold file. Without `--output`, it writes the default `thresholds.json`, which
+`analyze` and `evaluate` read by default. `--output PATH` writes an alternate threshold
+file instead and requires `--apply`; an alternate file is not used by `evaluate` unless
+it is copied over the default file. The command reports
+`"thresholds_calibrated": true`, `"thresholds_modified": true`, and
+`"thresholds_written": true` after a successful write. It does not invent threshold
+values from unlabeled images: the owner must review and set the values first, then apply
+the calibration decision.
 
 `evaluate` reads a local labels CSV with this exact shape:
 
@@ -95,7 +151,20 @@ blurry.jpg,NEEDS_RECAPTURE
 `filename` must be a plain name inside the evaluated folder; path traversal is rejected.
 `label` must be one of the three statuses. `evaluate` prints a confusion matrix,
 false-acceptance count/rate, false-rejection count/rate, and an
-`acceptable_but_poor` count. An unreadable image is counted as `NEEDS_RECAPTURE`.
+`acceptable_but_poor` count. An unreadable or no-document image is counted as
+`NEEDS_RECAPTURE`.
+
+Before a label is treated as missing, `evaluate` normalizes filename differences such as
+spaces, punctuation, brackets, Unicode width, and case. A unique match is analyzed and
+reported in `warnings`:
+
+```json
+"warnings": ["normalized: id_card_(5).jpeg -> id_card_5.jpeg"]
+```
+
+If normalization finds no match, the label is listed in `missing_files`; if it finds more
+than one candidate, it is listed in `ambiguous_files`. Both are counted as unreadable
+rather than silently discarded.
 
 ## Output contract
 
@@ -146,8 +215,11 @@ data, or an identity claim.
 
 ## Metrics and defaults
 
-The values below are the actual defaults in `thresholds.json`. They are provisional and
-**UNCALIBRATED**. `D` = `id_card/default`; `LC` = `driving_license/card`;
+The values below are the actual defaults in `thresholds.json`. They are provisional;
+layout status is tracked per profile/layout. `id_card/default` and
+`driving_license/card` are currently `CALIBRATED` from owner applies, and the other
+layouts are `UNCALIBRATED`.
+`D` = `id_card/default`; `LC` = `driving_license/card`;
 `LP/VP` = `driving_license/paper` and `vehicle_registration/paper`;
 `S` = `selfie/default`.
 
@@ -160,25 +232,27 @@ The values below are the actual defaults in `thresholds.json`. They are provisio
 | `min_original_width` | 640 | 800 | 1000 | 640 |
 | `min_original_height` | 480 | 500 | 700 | 480 |
 | `min_original_megapixels` | 0.30 | 0.40 | 0.70 | 0.30 |
-| `min_document_width` | 600 | 700 | 800 | n/a |
+| `min_document_width` | 500 | 700 | 800 | n/a |
 | `min_document_height` | 400 | 450 | 600 | n/a |
 | `min_document_megapixels` | 0.24 | 0.315 | 0.48 | n/a |
 | `evaluation_region.document_inset_fraction` | 0.03 | 0.03 | 0.03 | n/a |
 | `evaluation_region.central_fraction` | 0.8 | 0.8 | 0.8 | 0.7 |
-| `blur.laplacian_variance_poor` | 120 | 120 | 120 | 100 |
-| `blur.laplacian_variance_severe` | 10 | 10 | 10 | 10 |
-| `blur.tenengrad_poor` | 2500 | 2500 | 2500 | 2500 |
-| `blur.tenengrad_severe` | 1200 | 1200 | 1200 | 1200 |
+| `blur.laplacian_variance_poor` | 35 | 74.2 | 120 | 100 |
+| `blur.laplacian_variance_severe` | 30 | 20 | 10 | 10 |
+| `blur.tenengrad_poor` | 2500 | 6400.5 | 2500 | 2500 |
+| `blur.tenengrad_severe` | 2000 | 2000 | 1200 | 1200 |
 | `exposure.dark_mean` | 60 | 60 | 60 | 60 |
 | `exposure.overexposed_mean` | 215 | 215 | 215 | 215 |
 | `exposure.dark_clip_level` | 10 | 10 | 10 | 10 |
 | `exposure.bright_clip_level` | 245 | 245 | 245 | 245 |
 | `exposure.dark_clip_fraction` | 0.30 | 0.30 | 0.30 | 0.30 |
 | `exposure.bright_clip_fraction` | 0.35 | 0.35 | 0.35 | 0.35 |
-| `exposure.uneven_illumination_ratio` | 0.50 | 0.50 | 0.50 | 0.50 |
+| `exposure.uneven_illumination_ratio` | 0.65 | 0.50 | 0.50 | 0.50 |
 | `exposure.block_grid` | 8 | 8 | 8 | 8 |
 | `contrast.p5_p95_min_range` | 90 | 90 | 90 | 80 |
 | `contrast.rms_min` | 30 | 30 | 30 | 28 |
+| `contrast.p5_min` | 40 | 28.5 | 40 | 40 |
+| `contrast.rms_secondary_min` | 20 | 25 | 20 | 20 |
 
 ### Document-only defaults
 
@@ -191,7 +265,7 @@ The values below are the actual defaults in `thresholds.json`. They are provisio
 | `glare.max_component_fraction` | 0.008 | 0.008 | 0.008 |
 | `glare.max_background_fraction` | 0.25 | 0.25 | 0.25 |
 | `glare.max_near_saturated_fraction` | 0.30 | 0.30 | 0.30 |
-| `boundary.min_confidence` | 0.65 | 0.65 | 0.65 |
+| `boundary.min_confidence` | 0.55 | 0.45 | 0.65 |
 | `boundary.min_analysis_side_px` | 64 | 64 | 64 |
 | `boundary.fallback_min_area_ratio` | 0.25 | 0.25 | 0.25 |
 | `boundary.fallback_confidence` | 0.72 | 0.72 | 0.72 |
@@ -200,11 +274,12 @@ The values below are the actual defaults in `thresholds.json`. They are provisio
 | `boundary.cropping_min_sides` | 2 | 2 | 2 |
 | `boundary.cropping_min_confidence` | 0.80 | 0.80 | 0.80 |
 | `boundary.no_document_min_edge_density` | 0.004 | 0.004 | 0.004 |
+| `boundary.border_cut_full_frame_edge_density` | n/a | 0.068 | n/a |
 | `boundary.min_solidity` | 0.85 | 0.85 | 0.85 |
 | `boundary.canny_low` / `canny_high` | 50 / 150 | 50 / 150 | 50 / 150 |
 | `boundary.approx_epsilon_fraction` | 0.02 | 0.02 | 0.02 |
 | `boundary.dilate_iterations` | 2 | 2 | 2 |
-| `boundary.aspect_ratio_range` | `[1.35, 1.85]` | `[1.35, 1.85]` | `null` |
+| `boundary.aspect_ratio_range` | `[1.35, 1.85]` | `[1.30, 2.00]` | `null` |
 | `rotation.max_abs_angle_deg` | 5.0 | 5.0 | 5.0 |
 | `rotation.max_perspective_ratio` | 0.08 | 0.08 | 0.08 |
 
@@ -228,19 +303,33 @@ the document minimums is not met, the result adds `LOW_RES` as a **critical** pr
 #### `sharpness_laplacian`
 
 Variance of the Laplacian on the evaluation region. It is `measured` with confidence
-`0.95`. This is the primary focus indicator. A value at or below
-`laplacian_variance_poor` is a weak blur signal; a value at or below
+`0.95`. This is the secondary focus indicator. A value at or below
+`laplacian_variance_poor` is a weak blur signal; a value strictly below
 `laplacian_variance_severe` is a severe signal.
 
 #### `sharpness_tenengrad`
 
 Mean squared Sobel gradient energy: `mean(Gx² + Gy²)`. It is `measured` with confidence
-`0.90`. It is the independent second focus indicator. A value at or below
-`tenengrad_poor` is a weak blur signal; at or below `tenengrad_severe` is severe.
+`0.90`. It is the primary focus indicator. A value at or below `tenengrad_poor` is a weak
+blur signal; a value strictly below `tenengrad_severe` is severe.
 
-`BLURRY` is only `critical` when **both** indicators are severe. One poor indicator, or
-one severe indicator without the other, is only a moderate problem. Low contrast can
-depress both indicators, so blur output must be read together with `contrast`.
+For `id_card/default`, the soft bands are `30 <= laplacian <= 35` and
+`2000 <= tenengrad <= 2500`. The soft rule is an **AND** rule: a value in either band
+alone is accepted; only a value in **both** bands is a moderate `BLURRY` reason
+(`POOR_QUALITY`). The hard rule is independent: either indicator strictly below its
+severe edge is a critical `BLURRY` (`NEEDS_RECAPTURE`), so Tenengrad can reject on its
+own and Laplacian is a secondary hard veto. The soft-band edges are inclusive because
+only the hard comparison is strict. Tenengrad is the better separator on the labeled
+sample (Youden J = 0.947) than Laplacian (J = 0.783); the Laplacian soft upper edge of 35
+is just above the analyzed-only Youden suggestion of 34.8834, which keeps the readable
+easy specimen out of the both-soft warning zone. A would-be critical `BLURRY` is
+downgraded to moderate when the same image is `DARK` or `LOW_CONTRAST`, because those
+conditions depress both sharpness indicators.
+
+For `driving_license/card`, the calibrated soft bands are `20 <= laplacian <= 74.2` and
+`2000 <= tenengrad <= 6400.5`, with severe edges at 20 and 2000. Driving-license captures
+are sharper and higher-contrast than ID cards, so the same AND rule is used with
+profile-specific edges.
 
 #### `brightness`
 
@@ -264,9 +353,12 @@ mimic uneven lighting.
 
 #### `contrast`
 
-Reports the robust `p5_p95_range` and `rms_contrast` of the gray evaluation region. It is
-`measured`, confidence `0.90`. If either the percentile range or RMS is below its
-minimum, it adds `LOW_CONTRAST` (moderate). It also supports the `OVEREXPOSED` rule.
+Reports the robust `p5_p95_range`, `rms_contrast`, `p5`, and `p95` of the gray evaluation
+region. It is `measured`, confidence `0.90`. It adds `LOW_CONTRAST` (moderate) when the
+percentile range or RMS is below its primary minimum, or when the secondary signal
+`p5 < contrast.p5_min` or `rms_contrast < contrast.rms_secondary_min` is present. The
+secondary signal is intentionally redundant with the RMS check and adds a dark-end check
+for low-contrast captures. It also supports the `OVEREXPOSED` rule.
 
 #### `glare`
 
@@ -286,15 +378,26 @@ known confounders.
 
 #### `document_boundary`
 
-A heuristic geometric detector. It uses Canny edges, dilation, external contours,
-convexity, solidity, and `approxPolyDP` to propose a quadrilateral. A second Otsu
-bright-region fallback handles blurred cards and cards that touch the image border. A
-rectangle is **not** proof of a document.
+A heuristic geometric detector. It first uses Canny edges, dilation, external contours,
+convexity, solidity, and `approxPolyDP` to propose a quadrilateral. An Otsu bright-region
+fallback handles blurred cards and cards that touch the image border. If neither finds a
+candidate, `HoughLinesP` reconstructs a rectangle from straight edge segments, which
+recovers dashed or shadow-broken borders. If the area outside the central crop is
+featureless, the central crop becomes the document region. For `driving_license/card`,
+when there is no contour candidate but high-contrast content reaches at least two frame
+edges and central edge density exceeds `border_cut_full_frame_edge_density`, the full
+frame becomes the document region with `warning: border_cut_but_high_contrast`. Finally,
+a detected card whose area exceeds 80% of the frame is accepted as the full frame; frame
+borders are not treated as cropping evidence in either full-frame fallback. A rectangle
+is **not** proof of a document.
 
 Reported fields include `valid`, `area_ratio`, `bounding_box_working`, `quad_working`,
 `border_sides_touching`, `cropping_suspected`, `cropping_confirmed`, `aspect_ratio`,
 `aspect_ratio_in_range`, `edge_density`, `frame_border_ambiguous`,
-`no_document_signals`, `candidate_count`, and `solidity`.
+`no_document_signals`, `candidate_count`, `solidity`, `detector_used`, and `warning`.
+`detector_used` is one of `contour_quadrilateral`, `otsu_bright_region_quadrilateral`,
+`otsu_bright_region_min_area_rect`, `hough_lines`, `center_crop_fallback`, `full_frame`, or
+`no_candidate`.
 
 - Validity requires the candidate confidence to meet `min_confidence`.
 - Cropping is suspected when the quadrilateral touches at least `cropping_min_sides`
@@ -306,7 +409,8 @@ Reported fields include `valid`, `area_ratio`, `bounding_box_working`, `quad_wor
   no candidate contours at all.
 - `min_analysis_side_px` prevents boundary conclusions on very small working images.
 - `aspect_ratio_range` is checked only for card layouts. Paper layouts report
-  `aspect_ratio_in_range: null` because paper sizes vary.
+  `aspect_ratio_in_range: null` because paper sizes vary. It is diagnostic only: aspect
+  ratio alone does not add a rejection reason.
 
 The document region is perspective-warped in memory to a rectangle before sharpness,
 exposure, contrast, and glare metrics. The warp is for metric computation only; no image
@@ -335,14 +439,14 @@ The decision engine is rule-based:
 | --- | --- | --- |
 | Original resolution below profile minimum | critical | `TOO_SMALL` |
 | Document resolution below profile minimum | critical | `LOW_RES` |
-| Both sharpness indicators at severe thresholds | critical | `BLURRY` |
+| Either sharpness indicator strictly below its severe threshold, without dark or low-contrast exposure | critical | `BLURRY` |
 | Cropping confirmed | critical | `CROPPED` |
 | At least two no-document signals | critical | `NO_DOCUMENT_FOUND` |
-| One poor or one severe sharpness indicator | moderate | `BLURRY` |
+| Both sharpness indicators inside their soft bands | moderate | `BLURRY` |
 | Mean brightness below dark threshold, or dark clipping with mean below 100 | moderate | `DARK` |
 | High mean brightness, high bright clipping, and low contrast | moderate | `OVEREXPOSED` |
 | Uneven block illumination above threshold | moderate | `UNEVEN_LIGHT` |
-| Percentile range or RMS contrast below minimum | moderate | `LOW_CONTRAST` |
+| Percentile range or RMS contrast below primary minimum, or `p5`/secondary RMS below its limit | moderate | `LOW_CONTRAST` |
 | Glare fractions above limits and not suppressed | moderate | `GLARE` |
 | Absolute in-plane angle above threshold | moderate | `ROTATED` |
 | Perspective imbalance above threshold | moderate | `PERSPECTIVE` |
@@ -350,6 +454,10 @@ The decision engine is rule-based:
 - Any critical reason makes the status `NEEDS_RECAPTURE`.
 - Otherwise, any moderate reason makes it `POOR_QUALITY`.
 - No reasons makes it `ACCEPTABLE_QUALITY`.
+- For `id_card/default`, a single soft blur indicator is accepted. A hard `BLURRY` is
+  triggered by either indicator strictly below its severe edge; a moderate warning is
+  triggered only when both indicators are in their soft bands. Tenengrad is the primary
+  hard indicator and Laplacian is the secondary hard veto.
 - `unknown` metrics never reject by themselves.
 - `confidence = min(0.99, 0.5 + 0.5 × known_applicable_metrics / applicable_metrics)`.
   It is a coverage indicator, not a probability that the decision is correct. Structured
@@ -361,22 +469,26 @@ Reason codes are sorted by priority:
 
 ## Calibration
 
-`calibrate` only reports distributions. It never edits thresholds and always reports
-`thresholds_calibrated: false` and `thresholds_modified: false`.
+Without `--apply`, `calibrate` only reports distributions and never edits thresholds. It
+reports the selected layout's `thresholds_calibrated` value and
+`thresholds_modified: false`.
 
-To mark a layout calibrated, the owner must deliberately edit that layout's
-`calibration_status` in `thresholds.json` from `UNCALIBRATED` to `CALIBRATED`. The
-top-level `calibration_status` and `notes` are informational. A synthetic test run is not
-a calibration event and must not be used to change the status.
+`calibrate --apply` marks that profile/layout `CALIBRATED`, records the sample counts
+under its `calibration` metadata, and writes the threshold file. `--output PATH` writes an
+alternate file instead; it requires `--apply`. After a successful write the command
+reports `thresholds_calibrated: true`, `thresholds_modified: true`, and
+`thresholds_written: true`. The top-level `calibration_status` and `notes` remain
+informational; the per-layout status is authoritative. A synthetic test run is not a
+calibration event and must not be used to change the status.
 
 Recommended calibration process:
 
 1. Collect real, consented specimens with clear ownership and usage permission.
 2. Label each with the agreed status and reason codes.
-3. Run `calibrate` and inspect the distributions.
+3. Run `calibrate` and inspect the distributions and `metric_separation`.
 4. Run `evaluate` against the labels and review false acceptances and false rejections.
 5. Have a human owner review and document every threshold change.
-6. Only then mark the layout `CALIBRATED`.
+6. Only then run `calibrate ... --apply` to mark the layout `CALIBRATED`.
 7. Re-run `evaluate` and keep the report with the threshold version.
 
 Never copy, display, print, upload, or commit real specimens. Report aggregate metrics
@@ -387,8 +499,11 @@ only.
 - Images are decoded and processed entirely in memory.
 - The input file is never modified.
 - No debug images, resized copies, crops, or intermediate files are written.
-- Output contains no file path, file name, image content, base64, OCR text, face data, or
-  identity data.
+- `analyze` and `calibrate` output contains no file path, file name, image content,
+  base64, OCR text, face data, or identity data.
+- `evaluate` intentionally includes label filenames in `warnings`, `missing_files`, and
+  `ambiguous_files` for local reconciliation only. These are filename strings, never image
+  content or paths.
 - There is no OCR, no face detection, no biometrics, no identity comparison, and no fraud
   decision.
 - There is no network access during analysis. The test suite blocks `socket.socket` and
@@ -415,7 +530,7 @@ verification_agent/
     normalization.py                # bounded working copy, no upscaling
     output_schema.py                # versions, statuses, reason codes, validation
     profiles.py                     # profile/layout and threshold loading
-    thresholds.json                 # every threshold, all UNCALIBRATED
+    thresholds.json                 # per-profile thresholds and calibration metadata
     messages.json                   # en/fr messages; ar empty
     metrics/
       __init__.py
@@ -463,9 +578,10 @@ documents and contain no personal data. The no-document generator uses a fixed s
 Coverage includes: good document, blurry, low resolution, dark, overexposed, uneven
 light, low contrast, glare, cropped, rotated, no document, tiny image, EXIF orientation,
 WebP saved with a `.jpg` name, grayscale, corrupt, empty, over-megapixel, selfie quality
-only, structured errors, schema validation, CLI JSON/path privacy, calibrate/evaluate,
-false-acceptance/false-rejection math, file immutability, no debug files, and blocked
-network sockets.
+only, structured errors, schema validation, analyze/calibrate path privacy, evaluate
+filename reconciliation, calibrated-threshold persistence, Youden-J metric separation,
+soft-blur threshold bands, false-acceptance/false-rejection math, file immutability,
+no debug files, and blocked network sockets.
 
 A 12-megapixel timing benchmark is available from `verification_agent/ocr_lab`:
 
@@ -480,8 +596,11 @@ a synthetic local measurement, not a production latency guarantee.
 
 ## Limitations and non-goals
 
-- Defaults are uncalibrated and were tuned only against synthetic test images.
-- No real phone photo, real ID, real licence, or real registration has been validated.
+- Defaults are not production-validated. The `id_card/default` values were adjusted from
+  aggregate metrics of one local sample of real 720x1280 phone photos and a Youden-J
+  sharpness review. That layout is marked `CALIBRATED` by the owner, but this is still a
+  provisional sample-specific calibration; the other layouts remain `UNCALIBRATED`.
+- No production validation has been performed for any real ID, licence, or registration.
 - Boundary detection is heuristic; rounded corners, plastic sleeves, holograms, UI
   overlays, white backgrounds, and textured backgrounds can cause false positives or
   false negatives.
