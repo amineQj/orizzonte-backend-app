@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 from .analyzer import analyze_bytes
@@ -37,6 +39,7 @@ SLOT_PROFILES = {
 QUALITY_GATE_USABLE = frozenset({STATUS_ACCEPTABLE, STATUS_POOR})
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 OCR_TIMEOUT_SECONDS = 20
+TESSERACT_LANGUAGE = "fra"
 
 
 class BridgeError(Exception):
@@ -64,22 +67,75 @@ def _no_ocr_result(
     )
 
 
+def _tesseract_binary() -> str | None:
+    configured = os.environ.get("TESSERACT_CMD", "").strip()
+    if configured:
+        candidate = Path(configured)
+        if candidate.is_file():
+            return str(candidate)
+
+    found = shutil.which("tesseract")
+    if found is not None:
+        return found
+
+    candidates: list[Path] = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(
+            Path(local_app_data) / "Programs" / "Tesseract-OCR" / "tesseract.exe"
+        )
+    candidates.extend(
+        (
+            Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
+            Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
+        )
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _tessdata_prefix(binary: str) -> str | None:
+    configured = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if configured:
+        candidate = Path(configured)
+        if candidate.is_dir():
+            return str(candidate)
+
+    candidate = Path(binary).resolve().parent / "tessdata"
+    if candidate.is_dir():
+        return str(candidate)
+    return None
+
+
 def _tesseract_available() -> bool:
-    return shutil.which("tesseract") is not None
+    return _tesseract_binary() is not None
 
 
 def _run_tesseract(image_bytes: bytes) -> tuple[str | None, str]:
-    binary = shutil.which("tesseract")
+    binary = _tesseract_binary()
     if binary is None:
         return None, "UNAVAILABLE"
+    language = (
+        os.environ.get("TESSERACT_LANGUAGE", TESSERACT_LANGUAGE).strip()
+        or TESSERACT_LANGUAGE
+    )
+    env = os.environ.copy()
+    tessdata = _tessdata_prefix(binary)
+    if tessdata is not None:
+        env["TESSDATA_PREFIX"] = tessdata
+    else:
+        env.pop("TESSDATA_PREFIX", None)
     try:
         completed = subprocess.run(
-            [binary, "stdin", "stdout", "-l", "eng", "--psm", "3"],
+            [binary, "stdin", "stdout", "-l", language, "--psm", "3"],
             input=image_bytes,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=OCR_TIMEOUT_SECONDS,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None, "FAILED"

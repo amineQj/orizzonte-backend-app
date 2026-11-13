@@ -4,8 +4,9 @@
 
 This is a standalone, offline **image-quality gate** and **upload-slot consistency
 classifier**. The gate decides whether a photo is technically suitable for a later OCR
-stage. The classifier then checks whether caller-supplied OCR text is consistent with the
-declared slot. It does not bundle an OCR engine and does not perform biometrics, identity
+stage. The classifier then checks whether OCR text is consistent with the declared slot.
+The core package does not bundle an OCR engine; the optional `backend_bridge.py` used by
+Django can invoke a local Tesseract installation. It does not perform biometrics, identity
 matching, or fraud detection.
 
 The module is **not production-ready**:
@@ -46,8 +47,9 @@ The classifier runs only after the quality gate returns `ACCEPTABLE_QUALITY` or
 `POOR_QUALITY`. A `NEEDS_RECAPTURE` result blocks classification with
 `QUALITY_GATE_BLOCKED`.
 
-The caller supplies OCR text from the later OCR stage; this module does not run
-Tesseract or any other OCR engine:
+The core classifier accepts OCR text from the caller. The Django bridge can obtain that
+text from a local Tesseract installation; the classifier itself does not bundle an OCR
+engine:
 
 ```python
 from image_quality import classify_after_quality
@@ -76,6 +78,30 @@ keyword, conflicting keywords, a missing selfie face, and an unavailable face de
 also return `NEEDS_REVIEW`. Selfie classification uses only optional OpenCV Haar face
 presence; if the cascade is unavailable, the result is `NEEDS_REVIEW`. No colour,
 texture, appearance, biometric, or identity matching is used.
+
+## Tesseract OCR bridge
+
+`backend_bridge.py` invokes Tesseract only when `allow_ocr` is true and no trusted
+`ocr_text` is supplied. It uses `fra` by default, honors `TESSERACT_CMD`,
+`TESSERACT_LANGUAGE`, and `TESSDATA_PREFIX`, and auto-detects a per-user install at
+`%LOCALAPPDATA%\Programs\Tesseract-OCR` or a standard install at
+`C:\Program Files\Tesseract-OCR`.
+
+Windows setup:
+
+1. Download the UB-Mannheim installer:
+   `https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe`
+2. Run the installer, or extract it with 7-Zip into
+   `%LOCALAPPDATA%\Programs\Tesseract-OCR` when elevation is unavailable.
+3. Put the install directory on `PATH`.
+4. Download `fra.traineddata` from
+   `https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata` into
+   `<install>\tessdata`.
+5. Set `TESSDATA_PREFIX=<install>\tessdata`.
+6. Verify with `tesseract --version` and `tesseract --list-langs` (it must list `fra`).
+
+The bridge returns only OCR metadata (`used`, `available`, `source`, `reason`); it never
+returns the recognized text.
 
 ## Install and test (from `verification_agent/`)
 
@@ -609,10 +635,10 @@ only.
   `ambiguous_files_count`, `normalized_matches_count`) and generic warning codes; it does
   not echo label filenames or group names.
 - There is no bundled OCR engine, no biometrics, no identity comparison, and no fraud
-  decision.
-- Classification consumes caller-supplied OCR text and returns only public keyword
-  matches, not the raw OCR text. A selfie slot may run an optional OpenCV Haar
-  face-presence check; no face data or embeddings are stored.
+  decision. The optional bridge can call a separately installed Tesseract binary.
+- Classification consumes OCR text and returns only public keyword matches, not the raw
+  OCR text. The bridge never returns recognized text. A selfie slot may run an optional
+  OpenCV Haar face-presence check; no face data or embeddings are stored.
 - There is no network access during analysis. The test suite blocks `socket.socket` and
   confirms analysis still succeeds.
 - The CLI prints JSON only to stdout. Structured errors do not include tracebacks or
@@ -698,7 +724,8 @@ persistence, Youden-J metric separation, soft-blur threshold bands,
 false-acceptance/false-rejection math, Phase 3 keyword classification for every slot,
 slot/type mismatch to `NEEDS_REVIEW`, low confidence, no keyword, ambiguous keywords,
 selfie face fallback, configurable layouts, quality-gate blocking, OCR-text privacy,
-file immutability, no debug files, and blocked network sockets.
+Tesseract bridge integration with synthetic known and wrong document text, file
+immutability, no debug files, and blocked network sockets.
 
 A 12-megapixel timing benchmark is available from `verification_agent/ocr_lab`:
 
@@ -734,7 +761,8 @@ a synthetic local measurement, not a production latency guarantee.
 - Classification depends on OCR text quality and public-title keywords. It does not
   verify authenticity, extract personal fields, or prove document validity.
 - The module does not decide identity, authenticity, fraud, or document validity.
-- The module is not wired into Django, models, serializers, endpoints, settings, auth,
-  database, `.env`, frontend, or backend `requirements.txt`.
-- Phase 3 stops at slot/type consistency. OCR execution, biometrics, identity matching,
-  and fraud decisions remain out of scope.
+- The core module is not wired into Django; the separate `backend_bridge.py` is the
+  read-only stdin/stdout integration point. No models, database, `.env`, frontend, or
+  backend `requirements.txt` are modified.
+- Classification stops at slot/type consistency. OCR execution is limited to the optional
+  bridge; biometrics, identity matching, and fraud decisions remain out of scope.

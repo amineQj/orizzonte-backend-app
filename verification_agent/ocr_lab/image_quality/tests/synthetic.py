@@ -134,6 +134,44 @@ def good_document_bytes(
     return _to_bytes(image, image_format, quality=95) if image_format != "PNG" else _to_bytes(image)
 
 
+def ocr_document_bytes(
+    text: str,
+    width: int = 1600,
+    height: int = 1000,
+) -> bytes:
+    """Synthetic SPECIMEN card with large, legible text for OCR tests."""
+
+    image = Image.new("RGB", (width, height), (38, 42, 48))
+    draw = ImageDraw.Draw(image)
+    x0, y0 = int(width * 0.10), int(height * 0.10)
+    x1, y1 = int(width * 0.90), int(height * 0.90)
+    draw.rectangle(
+        [x0, y0, x1, y1],
+        fill=(235, 235, 235),
+        outline=(70, 70, 70),
+        width=max(2, width // 400),
+    )
+    header_height = int((y1 - y0) * 0.15)
+    draw.rectangle(
+        [x0 + 2, y0 + 2, x1 - 2, y0 + header_height],
+        fill=(210, 210, 210),
+    )
+    draw.text(
+        (x0 + int(width * 0.015), y0 + int(height * 0.018)),
+        "SPECIMEN / TEST",
+        fill=(20, 20, 20),
+        font=_font(max(18, int(height * 0.042))),
+    )
+    draw.multiline_text(
+        (x0 + int(width * 0.025), y0 + header_height + int(height * 0.05)),
+        text,
+        fill=(20, 20, 20),
+        font=_font(max(16, int(height * 0.034))),
+        spacing=max(8, int(height * 0.024)),
+    )
+    return _to_bytes(image)
+
+
 def uniform_background_document_bytes(
     width: int = 1600,
     height: int = 1000,
