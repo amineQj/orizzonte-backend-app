@@ -93,7 +93,7 @@ def test_both_severe_sharpness_indicators_are_needs_recapture() -> None:
 
 def test_one_soft_sharpness_indicator_alone_is_acceptable() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(32.0)
+    metrics["sharpness_laplacian"] = _m(25.0)
     metrics["sharpness_tenengrad"] = _m(5000.0)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_ACCEPTABLE
@@ -112,7 +112,7 @@ def test_one_severe_indicator_alone_needs_recapture() -> None:
 
 def test_soft_blur_band_is_poor_quality() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(32.0)
+    metrics["sharpness_laplacian"] = _m(25.0)
     metrics["sharpness_tenengrad"] = _m(2400.0)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_POOR
@@ -132,7 +132,7 @@ def test_easy_readable_specimen_metrics_are_acceptable() -> None:
 
 def test_soft_blur_boundary_is_inclusive() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(30.0)
+    metrics["sharpness_laplacian"] = _m(20.0)
     metrics["sharpness_tenengrad"] = _m(2000.0)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_POOR
@@ -214,8 +214,17 @@ def test_secondary_contrast_thresholds_are_strict() -> None:
 
 def test_sharpness_above_soft_band_is_acceptable() -> None:
     metrics = _base_metrics()
-    metrics["sharpness_laplacian"] = _m(35.1)
+    metrics["sharpness_laplacian"] = _m(25.1)
     metrics["sharpness_tenengrad"] = _m(2500.1)
+    decision = decide(metrics, _cfg(), True)
+    assert decision.status == STATUS_ACCEPTABLE
+    assert decision.reason_codes == []
+
+
+def test_reported_good_photo_is_acceptable_after_threshold_adjustment() -> None:
+    metrics = _base_metrics()
+    metrics["sharpness_laplacian"] = _m(26.8)
+    metrics["sharpness_tenengrad"] = _m(2865.0)
     decision = decide(metrics, _cfg(), True)
     assert decision.status == STATUS_ACCEPTABLE
     assert decision.reason_codes == []

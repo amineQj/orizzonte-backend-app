@@ -21,8 +21,8 @@
             "central_fraction": 0.8
           },
           "blur": {
-            "laplacian_variance_poor": 35.0,
-            "laplacian_variance_severe": 30.0,
+            "laplacian_variance_poor": 25.0,
+            "laplacian_variance_severe": 20.0,
             "tenengrad_poor": 2500.0,
             "tenengrad_severe": 2000.0
           },

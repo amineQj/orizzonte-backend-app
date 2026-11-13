@@ -320,8 +320,8 @@ other layouts are `UNCALIBRATED`.
 | `min_document_megapixels` | 0.24 | 0.315 | 0.48 | n/a |
 | `evaluation_region.document_inset_fraction` | 0.03 | 0.03 | 0.03 | n/a |
 | `evaluation_region.central_fraction` | 0.8 | 0.8 | 0.8 | 0.7 |
-| `blur.laplacian_variance_poor` | 35 | 74.2 | 120 | 100 |
-| `blur.laplacian_variance_severe` | 30 | 20 | 10 | 10 |
+| `blur.laplacian_variance_poor` | 25 | 74.2 | 120 | 100 |
+| `blur.laplacian_variance_severe` | 20 | 20 | 10 | 10 |
 | `blur.tenengrad_poor` | 2500 | 6400.5 | 2500 | 2500 |
 | `blur.tenengrad_severe` | 2000 | 2000 | 1200 | 1200 |
 | `exposure.dark_mean` | 60 | 60 | 60 | 60 |
@@ -397,18 +397,18 @@ Mean squared Sobel gradient energy: `mean(Gx² + Gy²)`. It is `measured` with c
 `0.90`. It is the primary focus indicator. A value at or below `tenengrad_poor` is a weak
 blur signal; a value strictly below `tenengrad_severe` is severe.
 
-For `id_card/default`, the soft bands are `30 <= laplacian <= 35` and
+For `id_card/default`, the soft bands are `20 <= laplacian <= 25` and
 `2000 <= tenengrad <= 2500`. The soft rule is an **AND** rule: a value in either band
 alone is accepted; only a value in **both** bands is a moderate `BLURRY` reason
 (`POOR_QUALITY`). The hard rule is independent: either indicator strictly below its
 severe edge is a critical `BLURRY` (`NEEDS_RECAPTURE`), so Tenengrad can reject on its
 own and Laplacian is a secondary hard veto. The soft-band edges are inclusive because
 only the hard comparison is strict. Tenengrad is the better separator on the labeled
-sample (Youden J = 0.947) than Laplacian (J = 0.783); the Laplacian soft upper edge of 35
-is just above the analyzed-only Youden suggestion of 34.8834, which keeps the readable
-easy specimen out of the both-soft warning zone. A would-be critical `BLURRY` is
-downgraded to moderate when the same image is `DARK` or `LOW_CONTRAST`, because those
-conditions depress both sharpness indicators.
+sample (Youden J = 0.947) than Laplacian (J = 0.783). The Laplacian soft upper edge was
+lowered from 35 to 25 after a well-framed specimen with Laplacian 26.8 and Tenengrad
+2865 was falsely rejected; Tenengrad remains the primary blur guard. A would-be critical
+`BLURRY` is downgraded to moderate when the same image is `DARK` or `LOW_CONTRAST`,
+because those conditions depress both sharpness indicators.
 
 For `driving_license/card`, the provisional soft bands are `20 <= laplacian <= 74.2` and
 `2000 <= tenengrad <= 6400.5`, with severe edges at 20 and 2000. Driving-license captures
