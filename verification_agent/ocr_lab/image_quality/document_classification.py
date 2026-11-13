@@ -10,7 +10,6 @@ appearance, biometrics, or identity data.
 from __future__ import annotations
 
 import json
-import re
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -44,9 +43,6 @@ REASON_FACE_DETECTOR_UNAVAILABLE = "FACE_DETECTOR_UNAVAILABLE"
 REASON_QUALITY_GATE_BLOCKED = "QUALITY_GATE_BLOCKED"
 
 SLOT_MODES = ("text", "face")
-
-_NON_ALPHANUMERIC = re.compile(r"[^0-9A-Z]+")
-
 
 class ClassificationError(Exception):
     """An invalid slot, configuration, or classification input.
@@ -129,13 +125,25 @@ def normalize_classification_text(value: str) -> str:
     without_accents = "".join(
         character for character in decomposed if not unicodedata.combining(character)
     )
-    return _NON_ALPHANUMERIC.sub(" ", without_accents.upper()).strip()
+    normalized = "".join(
+        character if character.isalnum() else " "
+        for character in without_accents
+    )
+    return " ".join(normalized.upper().split())
 
 
 def _contains_keyword(normalized_text: str, normalized_keyword: str) -> bool:
     if not normalized_keyword:
         return False
     return f" {normalized_keyword} " in f" {normalized_text} "
+
+
+def _keyword_group(value: str) -> str:
+    """Group keywords by script so each language is scored independently."""
+
+    if any("\u0600" <= character <= "\u06FF" for character in value):
+        return "arabic"
+    return "latin"
 
 
 def _document_layouts_path() -> Path:
@@ -392,15 +400,33 @@ def _classify_text(
 
     scored: list[tuple[float, str, tuple[str, ...]]] = []
     for type_name, type_definition in config.types.items():
-        matched: list[str] = []
-        score = 0.0
+        groups: dict[str, list[Any]] = {}
         for keyword in type_definition.keywords:
-            if _contains_keyword(normalized_text, keyword.normalized):
-                score += keyword.weight
-                matched.append(keyword.text)
-        if score > 0.0:
-            confidence = min(1.0, score / type_definition.total_weight)
-            scored.append((confidence, type_name, tuple(matched)))
+            if not _contains_keyword(normalized_text, keyword.normalized):
+                continue
+            group = _keyword_group(keyword.text)
+            score, matched = groups.setdefault(group, [0.0, []])
+            groups[group] = [score + keyword.weight, [*matched, keyword.text]]
+
+        if not groups:
+            continue
+
+        best_confidence = 0.0
+        best_matched: tuple[str, ...] = ()
+        for group, (score, matched) in groups.items():
+            group_total = sum(
+                keyword.weight
+                for keyword in type_definition.keywords
+                if _keyword_group(keyword.text) == group
+            )
+            if group_total <= 0.0:
+                continue
+            confidence = min(1.0, score / group_total)
+            if confidence > best_confidence:
+                best_confidence = confidence
+                best_matched = tuple(matched)
+        if best_matched:
+            scored.append((best_confidence, type_name, best_matched))
 
     if not scored:
         return _result(

@@ -7,10 +7,13 @@ real Algerian documents and contain no personal data.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+
+_ASSETS = Path(__file__).with_name("assets")
 
 
 def _font(size: int) -> ImageFont.ImageFont:
@@ -170,6 +173,16 @@ def ocr_document_bytes(
         spacing=max(8, int(height * 0.024)),
     )
     return _to_bytes(image)
+
+
+def arabic_id_card_bytes() -> bytes:
+    """Synthetic Arabic ID card containing public document titles only.
+
+    The fixture is pre-rendered because the test environment's Pillow build
+    does not include libraqm for Arabic shaping.  It contains no personal data.
+    """
+
+    return (_ASSETS / "arabic_id_specimen.png").read_bytes()
 
 
 def uniform_background_document_bytes(

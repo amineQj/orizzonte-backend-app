@@ -73,11 +73,13 @@ def run_verification(
     slot: str,
     *,
     ocr_text: str | None = None,
+    debug_ocr: bool = False,
 ) -> dict:
     """Run the quality gate and classification in the verification environment.
 
     ``ocr_text`` is reserved for trusted internal callers; the HTTP endpoint
-    never accepts OCR text from an uploader.
+    never accepts OCR text from an uploader. ``debug_ocr`` returns the raw
+    Tesseract text only when the caller has explicitly enabled debug output.
     """
 
     if not image_bytes:
@@ -91,6 +93,7 @@ def run_verification(
         "allow_ocr": not bool(
             getattr(settings, "VERIFICATION_AGENT_DISABLE_OCR", False)
         ),
+        "debug_ocr": bool(debug_ocr),
     }
     if ocr_text is not None:
         payload["ocr_text"] = ocr_text
@@ -145,12 +148,17 @@ def final_decision(result: dict) -> str:
     return FINAL_MANUAL_REVIEW
 
 
-def build_response(slot: str, result: dict) -> dict:
+def build_response(
+    slot: str,
+    result: dict,
+    *,
+    include_debug: bool = False,
+) -> dict:
     """Flatten the fields expected by the API contract without leaking text."""
 
     quality = result["quality"]
     classification = result["classification"]
-    return {
+    response = {
         "slot": slot,
         "quality_status": quality.get("status"),
         "reason_codes": list(quality.get("reason_codes") or []),
@@ -160,3 +168,6 @@ def build_response(slot: str, result: dict) -> dict:
         "ocr": result["ocr"],
         "final_decision": final_decision(result),
     }
+    if include_debug and "ocr_debug_text" in result:
+        response["ocr_debug_text"] = result["ocr_debug_text"]
+    return response

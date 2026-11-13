@@ -35,6 +35,14 @@
         {
           "text": "CARTE NATIONALE D'IDENTITE",
           "weight": 3.0
+        },
+        {
+          "text": "الجمهورية الجزائرية الديمقراطية الشعبية",
+          "weight": 2.0
+        },
+        {
+          "text": "بطاقة التعريف الوطنية",
+          "weight": 3.0
         }
       ]
     },
@@ -47,6 +55,14 @@
         {
           "text": "REPUBLIQUE ALGERIENNE",
           "weight": 1.0
+        },
+        {
+          "text": "رخصة السياقة",
+          "weight": 3.0
+        },
+        {
+          "text": "الجمهورية الجزائرية",
+          "weight": 1.0
         }
       ]
     },
@@ -58,6 +74,14 @@
         },
         {
           "text": "CARTE GRISE",
+          "weight": 2.0
+        },
+        {
+          "text": "شهادة تسجيل",
+          "weight": 3.0
+        },
+        {
+          "text": "البطاقة الرمادية",
           "weight": 2.0
         }
       ]

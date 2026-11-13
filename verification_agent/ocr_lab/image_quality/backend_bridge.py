@@ -3,7 +3,7 @@
 The backend runs this module with the verification_agent virtual environment so
 the backend process does not need OpenCV or numpy.  It reads one JSON object
 from stdin and writes one JSON object to stdout.  No filename, path, image
-content, or OCR text is returned.
+content, or OCR text is returned unless ``debug_ocr`` is explicitly requested.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ SLOT_PROFILES = {
 QUALITY_GATE_USABLE = frozenset({STATUS_ACCEPTABLE, STATUS_POOR})
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 OCR_TIMEOUT_SECONDS = 20
-TESSERACT_LANGUAGE = "fra"
+TESSERACT_LANGUAGE = "fra+ara"
 
 
 class BridgeError(Exception):
@@ -170,7 +170,7 @@ def _classify(
     ocr_text: str | None,
     allow_ocr: bool,
     config: ClassificationConfig,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     status = quality.get("status")
     if status not in QUALITY_GATE_USABLE:
         classification = classify_after_quality(
@@ -186,6 +186,7 @@ def _classify(
                 source="none",
                 reason="NOT_REQUIRED",
             ),
+            None,
         )
 
     slot_definition = config.slots[slot]
@@ -204,6 +205,7 @@ def _classify(
                 source="none",
                 reason="NOT_REQUIRED",
             ),
+            None,
         )
 
     if ocr_text is not None and ocr_text.strip():
@@ -221,6 +223,7 @@ def _classify(
                 source="provided",
                 reason="OCR_USED",
             ),
+            None,
         )
 
     if not allow_ocr:
@@ -233,6 +236,7 @@ def _classify(
                 source="none",
                 reason="NO_OCR",
             ),
+            None,
         )
 
     text, ocr_status = _run_tesseract(image_bytes)
@@ -251,6 +255,7 @@ def _classify(
                 source="tesseract",
                 reason="OCR_USED",
             ),
+            text,
         )
 
     classification = _no_ocr_result(slot, config)
@@ -264,6 +269,7 @@ def _classify(
             source="none",
             reason=reason,
         ),
+        None,
     )
 
 
@@ -275,6 +281,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     slot = payload.get("slot")
     ocr_text = payload.get("ocr_text")
     allow_ocr = payload.get("allow_ocr", True)
+    debug_ocr = payload.get("debug_ocr", False)
 
     if not isinstance(encoded, str) or not encoded:
         raise BridgeError("INVALID_REQUEST")
@@ -283,6 +290,8 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     if ocr_text is not None and not isinstance(ocr_text, str):
         raise BridgeError("INVALID_REQUEST")
     if not isinstance(allow_ocr, bool):
+        raise BridgeError("INVALID_REQUEST")
+    if not isinstance(debug_ocr, bool):
         raise BridgeError("INVALID_REQUEST")
 
     try:
@@ -298,7 +307,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         SLOT_PROFILES[slot],
         layout=None,
     )
-    classification, ocr = _classify(
+    classification, ocr, ocr_debug_text = _classify(
         image_bytes=image_bytes,
         slot=slot,
         quality=quality,
@@ -306,11 +315,14 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         allow_ocr=allow_ocr,
         config=config,
     )
-    return {
+    response: dict[str, Any] = {
         "quality": quality,
         "classification": classification,
         "ocr": ocr,
     }
+    if debug_ocr:
+        response["ocr_debug_text"] = ocr_debug_text
+    return response
 
 
 def main() -> int:

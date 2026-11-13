@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.conf import settings
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -44,8 +45,18 @@ class VerificationCheckView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        debug_enabled = bool(
+            getattr(settings, "DEBUG", False)
+            and getattr(settings, "VERIFICATION_AGENT_DEBUG_OCR", False)
+            and request.query_params.get("debug") == "1"
+        )
+
         try:
-            result = run_verification(image_bytes, slot)
+            result = run_verification(
+                image_bytes,
+                slot,
+                debug_ocr=debug_enabled,
+            )
         except VerificationUnavailable as exc:
             return Response(
                 {
@@ -55,4 +66,6 @@ class VerificationCheckView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        return Response(build_response(slot, result))
+        return Response(
+            build_response(slot, result, include_debug=debug_enabled)
+        )

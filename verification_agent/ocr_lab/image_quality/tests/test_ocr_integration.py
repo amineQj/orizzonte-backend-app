@@ -30,6 +30,11 @@ WRONG_DOCUMENT_OCR_TEXT = (
     "PERMIS DE CONDUIRE\n"
     "SPECIMEN / TEST"
 )
+FRENCH_ID_OCR_TEXT = (
+    "REPUBLIQUE ALGERIENNE\n"
+    "CARTE NATIONALE D'IDENTITE\n"
+    "SPECIMEN / TEST"
+)
 
 
 def _payload(image_bytes: bytes, slot: str = "id_card_front") -> dict[str, str | bool]:
@@ -77,6 +82,39 @@ def test_known_id_text_classifies_as_match() -> None:
     assert "CARTE NATIONALE D'IDENTITE" in classification["matched_keywords"]
 
 
+def test_french_id_image_still_classifies_as_match() -> None:
+    result = backend_bridge.handle(
+        _payload(s.ocr_document_bytes(FRENCH_ID_OCR_TEXT))
+    )
+
+    assert result["quality"]["status"] in {STATUS_ACCEPTABLE, STATUS_POOR}
+    assert result["ocr"]["used"] is True
+    assert result["ocr"]["source"] == "tesseract"
+    classification = result["classification"]
+    assert classification["detected_type"] == "id_card"
+    assert classification["consistency"] == CONSISTENCY_MATCH
+    assert classification["decision"] == DECISION_MATCH
+    assert classification["manual_review_required"] is False
+
+
+def test_arabic_id_image_classifies_as_match() -> None:
+    result = backend_bridge.handle(_payload(s.arabic_id_card_bytes()))
+
+    assert result["quality"]["status"] in {STATUS_ACCEPTABLE, STATUS_POOR}
+    assert result["ocr"]["used"] is True
+    assert result["ocr"]["source"] == "tesseract"
+    classification = result["classification"]
+    assert classification["detected_type"] == "id_card"
+    assert classification["consistency"] == CONSISTENCY_MATCH
+    assert classification["decision"] == DECISION_MATCH
+    assert classification["manual_review_required"] is False
+    assert (
+        "الجمهورية الجزائرية الديمقراطية الشعبية"
+        in classification["matched_keywords"]
+    )
+    assert "بطاقة التعريف الوطنية" in classification["matched_keywords"]
+
+
 def test_wrong_document_text_classifies_as_mismatch() -> None:
     result = backend_bridge.handle(
         _payload(s.ocr_document_bytes(WRONG_DOCUMENT_OCR_TEXT))
@@ -92,3 +130,40 @@ def test_wrong_document_text_classifies_as_mismatch() -> None:
     assert classification["manual_review_required"] is True
     assert classification["reason_code"] == "SLOT_MISMATCH"
     assert "PERMIS DE CONDUIRE" in classification["matched_keywords"]
+
+
+def test_debug_ocr_is_absent_by_default() -> None:
+    result = backend_bridge.handle(
+        _payload(s.ocr_document_bytes(ID_CARD_OCR_TEXT))
+    )
+
+    assert "ocr_debug_text" not in result
+
+
+def test_debug_ocr_returns_raw_tesseract_text() -> None:
+    result = backend_bridge.handle(
+        {
+            **_payload(s.ocr_document_bytes(ID_CARD_OCR_TEXT)),
+            "debug_ocr": True,
+        }
+    )
+
+    assert "ocr_debug_text" in result
+    debug_text = result["ocr_debug_text"]
+    assert debug_text is not None
+    assert "REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE" in " ".join(
+        debug_text.upper().split()
+    )
+
+
+def test_debug_ocr_returns_null_when_ocr_is_disabled() -> None:
+    result = backend_bridge.handle(
+        {
+            **_payload(s.ocr_document_bytes(ID_CARD_OCR_TEXT)),
+            "debug_ocr": True,
+            "allow_ocr": False,
+        }
+    )
+
+    assert "ocr_debug_text" in result
+    assert result["ocr_debug_text"] is None

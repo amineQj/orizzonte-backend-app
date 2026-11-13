@@ -26,6 +26,18 @@ VEHICLE_REGISTRATION_TEXT = (
     "CARTE GRISE\n"
     "SPECIMEN / TEST"
 )
+ARABIC_ID_CARD_TEXT = (
+    "\u200fالجمهورية الجزائرية الديمقراطية الشعبية\u200e\n"
+    "\u200fبطاقة التعريف الوطنية\u200e"
+)
+ARABIC_DRIVING_LICENSE_TEXT = (
+    "\u200fالجمهورية الجزائرية\u200e\n"
+    "\u200fرخصة السياقة\u200e"
+)
+ARABIC_VEHICLE_REGISTRATION_TEXT = (
+    "\u200fشهادة تسجيل\u200e\n"
+    "\u200fالبطاقة الرمادية\u200e"
+)
 
 
 @pytest.mark.parametrize(
@@ -50,6 +62,32 @@ def test_correct_keywords_match_declared_slot(
     assert result.decision == dc.DECISION_MATCH
     assert result.manual_review_required is False
     assert result.confidence >= 0.6 - 1e-9
+
+
+@pytest.mark.parametrize(
+    ("slot", "text", "expected_type"),
+    [
+        ("id_card_front", ARABIC_ID_CARD_TEXT, "id_card"),
+        ("driving_license", ARABIC_DRIVING_LICENSE_TEXT, "driving_license"),
+        (
+            "vehicle_registration",
+            ARABIC_VEHICLE_REGISTRATION_TEXT,
+            "vehicle_registration",
+        ),
+    ],
+)
+def test_arabic_keywords_match_declared_slot(
+    slot: str,
+    text: str,
+    expected_type: str,
+) -> None:
+    result = dc.classify_document(slot, ocr_text=text)
+
+    assert result.expected_type == expected_type
+    assert result.detected_type == expected_type
+    assert result.consistency == dc.CONSISTENCY_MATCH
+    assert result.decision == dc.DECISION_MATCH
+    assert result.manual_review_required is False
 
 
 def test_accent_and_punctuation_normalization() -> None:

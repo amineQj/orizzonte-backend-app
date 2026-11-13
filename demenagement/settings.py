@@ -270,3 +270,8 @@ VERIFICATION_AGENT_TIMEOUT_SECONDS = float(
 VERIFICATION_AGENT_DISABLE_OCR = (
     os.environ.get('VERIFICATION_AGENT_DISABLE_OCR', 'False') == 'True'
 )
+# Raw OCR text is exposed only with DEBUG + this flag + ?debug=1.  Never
+# enable it in production.
+VERIFICATION_AGENT_DEBUG_OCR = (
+    os.environ.get('VERIFICATION_AGENT_DEBUG_OCR', str(DEBUG)) == 'True'
+)

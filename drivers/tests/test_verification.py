@@ -275,9 +275,10 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         self.client = auth_client(self.driver)
         self.url = reverse("verification-check")
 
-    def _post(self, *, slot="id_card_front", data=None, name="specimen.png"):
+    def _post(self, *, slot="id_card_front", data=None, name="specimen.png", query=""):
+        url = f"{self.url}?{query}" if query else self.url
         return self.client.post(
-            self.url,
+            url,
             {"slot": slot, "file": upload(name, data or specimen_document_bytes())},
             format="multipart",
         )
@@ -338,6 +339,58 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
 
         # The endpoint must not echo the uploader's filename or image content.
         self.assertNotIn(b"specimen.png", response.content)
+
+    @override_settings(DEBUG=True, VERIFICATION_AGENT_DEBUG_OCR=True)
+    @patch("drivers.verification_views.run_verification")
+    def test_debug_query_returns_ocr_text_when_enabled(self, run):
+        result = _fake_result()
+        result["ocr_debug_text"] = "SYNTHETIC OCR TEXT"
+        run.return_value = result
+
+        response = self._post(query="debug=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ocr_debug_text"], "SYNTHETIC OCR TEXT")
+        self.assertIs(run.call_args.kwargs["debug_ocr"], True)
+
+    @override_settings(DEBUG=True, VERIFICATION_AGENT_DEBUG_OCR=False)
+    @patch("drivers.verification_views.run_verification")
+    def test_debug_query_is_ignored_without_config_flag(self, run):
+        result = _fake_result()
+        result["ocr_debug_text"] = "SHOULD NOT LEAK"
+        run.return_value = result
+
+        response = self._post(query="debug=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("ocr_debug_text", response.json())
+        self.assertIs(run.call_args.kwargs["debug_ocr"], False)
+
+    @override_settings(DEBUG=True, VERIFICATION_AGENT_DEBUG_OCR=True)
+    @patch("drivers.verification_views.run_verification")
+    def test_debug_config_flag_without_query_does_not_return_text(self, run):
+        result = _fake_result()
+        result["ocr_debug_text"] = "SHOULD NOT LEAK"
+        run.return_value = result
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("ocr_debug_text", response.json())
+        self.assertIs(run.call_args.kwargs["debug_ocr"], False)
+
+    @override_settings(DEBUG=False, VERIFICATION_AGENT_DEBUG_OCR=True)
+    @patch("drivers.verification_views.run_verification")
+    def test_debug_is_disabled_when_django_debug_is_off(self, run):
+        result = _fake_result()
+        result["ocr_debug_text"] = "SHOULD NOT LEAK"
+        run.return_value = result
+
+        response = self._post(query="debug=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("ocr_debug_text", response.json())
+        self.assertIs(run.call_args.kwargs["debug_ocr"], False)
 
     @patch("drivers.verification_views.run_verification")
     def test_accept_only_when_quality_is_acceptable_and_type_matches(self, run):

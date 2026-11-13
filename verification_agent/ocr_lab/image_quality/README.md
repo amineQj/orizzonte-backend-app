@@ -62,12 +62,13 @@ configurable public-title keywords in `document_layouts.json`. The default entri
 
 | Type | Public keywords |
 | --- | --- |
-| `id_card` | `REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE`, `CARTE NATIONALE D'IDENTITE` |
-| `driving_license` | `PERMIS DE CONDUIRE`, `REPUBLIQUE ALGERIENNE` |
-| `vehicle_registration` | `CERTIFICAT D'IMMATRICULATION`, `CARTE GRISE` |
+| `id_card` | `REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE`, `CARTE NATIONALE D'IDENTITE`, `الجمهورية الجزائرية الديمقراطية الشعبية`, `بطاقة التعريف الوطنية` |
+| `driving_license` | `PERMIS DE CONDUIRE`, `REPUBLIQUE ALGERIENNE`, `رخصة السياقة`, `الجمهورية الجزائرية` |
+| `vehicle_registration` | `CERTIFICAT D'IMMATRICULATION`, `CARTE GRISE`, `شهادة تسجيل`, `البطاقة الرمادية` |
 | `selfie` | no text keywords; face presence only |
 
-Each keyword has a configurable weight. A detected type must reach `min_confidence`; a
+Each keyword has a configurable weight. Latin and Arabic keywords are scored
+independently, so a document matching either language can reach `min_confidence`; a
 close second candidate is treated as ambiguous. The result contains `declared_slot`,
 `expected_type`, `detected_type`, `confidence`, `consistency` (`MATCH`, `MISMATCH`, or
 `UNKNOWN`), `decision` (`MATCH`, `NEEDS_REVIEW`, or `QUALITY_GATE_BLOCKED`),
@@ -82,7 +83,7 @@ texture, appearance, biometric, or identity matching is used.
 ## Tesseract OCR bridge
 
 `backend_bridge.py` invokes Tesseract only when `allow_ocr` is true and no trusted
-`ocr_text` is supplied. It uses `fra` by default, honors `TESSERACT_CMD`,
+`ocr_text` is supplied. It uses `fra+ara` by default, honors `TESSERACT_CMD`,
 `TESSERACT_LANGUAGE`, and `TESSDATA_PREFIX`, and auto-detects a per-user install at
 `%LOCALAPPDATA%\Programs\Tesseract-OCR` or a standard install at
 `C:\Program Files\Tesseract-OCR`.
@@ -94,14 +95,18 @@ Windows setup:
 2. Run the installer, or extract it with 7-Zip into
    `%LOCALAPPDATA%\Programs\Tesseract-OCR` when elevation is unavailable.
 3. Put the install directory on `PATH`.
-4. Download `fra.traineddata` from
-   `https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata` into
+4. Download `fra.traineddata` and `ara.traineddata` from
+   `https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata` and
+   `https://github.com/tesseract-ocr/tessdata/raw/main/ara.traineddata` into
    `<install>\tessdata`.
 5. Set `TESSDATA_PREFIX=<install>\tessdata`.
-6. Verify with `tesseract --version` and `tesseract --list-langs` (it must list `fra`).
+6. Verify with `tesseract --version` and `tesseract --list-langs` (it must list
+   both `fra` and `ara`).
 
-The bridge returns only OCR metadata (`used`, `available`, `source`, `reason`); it never
-returns the recognized text.
+The bridge returns only OCR metadata (`used`, `available`, `source`, `reason`) by
+default. Raw Tesseract text is returned only when the internal `debug_ocr` flag is
+explicitly set; the HTTP endpoint enables it only with `DEBUG=True`,
+`VERIFICATION_AGENT_DEBUG_OCR=True`, and `?debug=1`.
 
 ## Install and test (from `verification_agent/`)
 
