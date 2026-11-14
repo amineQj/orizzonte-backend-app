@@ -61,6 +61,7 @@ class KeywordDefinition:
     text: str
     weight: float
     normalized: str
+    specific: bool = True
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,14 @@ class TypeDefinition:
     @property
     def total_weight(self) -> float:
         return sum(keyword.weight for keyword in self.keywords)
+
+    @property
+    def specific_keywords(self) -> tuple[KeywordDefinition, ...]:
+        return tuple(keyword for keyword in self.keywords if keyword.specific)
+
+    @property
+    def generic_keywords(self) -> tuple[KeywordDefinition, ...]:
+        return tuple(keyword for keyword in self.keywords if not keyword.specific)
 
 
 @dataclass(frozen=True)
@@ -204,9 +213,12 @@ def load_document_layouts(path: str | Path | None = None) -> ClassificationConfi
                 raise ClassificationError("invalid_configuration")
             text = keyword_data.get("text")
             weight = keyword_data.get("weight")
+            specific = keyword_data.get("specific", True)
             if not isinstance(text, str) or not text.strip():
                 raise ClassificationError("invalid_configuration")
             if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                raise ClassificationError("invalid_configuration")
+            if not isinstance(specific, bool):
                 raise ClassificationError("invalid_configuration")
             numeric_weight = float(weight)
             if numeric_weight <= 0.0:
@@ -219,6 +231,7 @@ def load_document_layouts(path: str | Path | None = None) -> ClassificationConfi
                     text=text.strip(),
                     weight=numeric_weight,
                     normalized=normalized,
+                    specific=specific,
                 )
             )
         types[type_name] = TypeDefinition(
@@ -398,37 +411,78 @@ def _classify_text(
             reason_code=REASON_NO_TEXT,
         )
 
-    scored: list[tuple[float, str, tuple[str, ...]]] = []
+    specific_scored: list[tuple[float, str, tuple[str, ...]]] = []
+    generic_scored: list[tuple[float, str, tuple[str, ...]]] = []
     for type_name, type_definition in config.types.items():
-        groups: dict[str, list[Any]] = {}
+        groups: dict[str, list[KeywordDefinition]] = {}
         for keyword in type_definition.keywords:
             if not _contains_keyword(normalized_text, keyword.normalized):
                 continue
             group = _keyword_group(keyword.text)
-            score, matched = groups.setdefault(group, [0.0, []])
-            groups[group] = [score + keyword.weight, [*matched, keyword.text]]
+            groups.setdefault(group, []).append(keyword)
 
         if not groups:
             continue
 
-        best_confidence = 0.0
-        best_matched: tuple[str, ...] = ()
-        for group, (score, matched) in groups.items():
-            group_total = sum(
-                keyword.weight
-                for keyword in type_definition.keywords
-                if _keyword_group(keyword.text) == group
+        best_specific: tuple[float, tuple[str, ...]] | None = None
+        best_generic: tuple[float, tuple[str, ...]] | None = None
+        for group, matched in groups.items():
+            matched_specific = [
+                keyword for keyword in matched if keyword.specific
+            ]
+            max_specific_weight = max(
+                (
+                    keyword.weight
+                    for keyword in type_definition.specific_keywords
+                    if _keyword_group(keyword.text) == group
+                ),
+                default=0.0,
             )
-            if group_total <= 0.0:
-                continue
-            confidence = min(1.0, score / group_total)
-            if confidence > best_confidence:
-                best_confidence = confidence
-                best_matched = tuple(matched)
-        if best_matched:
-            scored.append((best_confidence, type_name, best_matched))
+            if max_specific_weight <= 0.0:
+                confidence = 0.0
+            else:
+                confidence = min(
+                    1.0,
+                    sum(
+                        keyword.weight
+                        for keyword in (matched_specific or matched)
+                    )
+                    / max_specific_weight,
+                )
+            matched_text = tuple(keyword.text for keyword in matched)
+            if matched_specific:
+                if best_specific is None or confidence > best_specific[0]:
+                    best_specific = (confidence, matched_text)
+            elif best_generic is None or confidence > best_generic[0]:
+                best_generic = (confidence, matched_text)
 
-    if not scored:
+        if best_specific is not None:
+            specific_scored.append(
+                (best_specific[0], type_name, best_specific[1])
+            )
+        if best_generic is not None:
+            generic_scored.append((best_generic[0], type_name, best_generic[1]))
+
+    if not specific_scored:
+        if generic_scored:
+            generic_confidence = max(item[0] for item in generic_scored)
+            generic_keywords = tuple(
+                dict.fromkeys(
+                    keyword
+                    for _confidence, _type_name, matched in generic_scored
+                    for keyword in matched
+                )
+            )
+            return _result(
+                slot,
+                detected_type=None,
+                confidence=generic_confidence,
+                consistency=CONSISTENCY_UNKNOWN,
+                decision=DECISION_NEEDS_REVIEW,
+                manual_review_required=True,
+                reason_code=REASON_AMBIGUOUS_KEYWORDS,
+                matched_keywords=generic_keywords,
+            )
         return _result(
             slot,
             detected_type=None,
@@ -439,9 +493,11 @@ def _classify_text(
             reason_code=REASON_NO_KEYWORD,
         )
 
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    top_confidence, top_type, top_keywords = scored[0]
-    second_confidence = scored[1][0] if len(scored) > 1 else 0.0
+    specific_scored.sort(key=lambda item: (-item[0], item[1]))
+    top_confidence, top_type, top_keywords = specific_scored[0]
+    second_confidence = (
+        specific_scored[1][0] if len(specific_scored) > 1 else 0.0
+    )
 
     if top_confidence + 1e-9 < config.min_confidence:
         return _result(
@@ -456,7 +512,7 @@ def _classify_text(
         )
 
     if (
-        len(scored) > 1
+        len(specific_scored) > 1
         and top_confidence - second_confidence + 1e-9 < config.min_confidence_margin
     ):
         return _result(

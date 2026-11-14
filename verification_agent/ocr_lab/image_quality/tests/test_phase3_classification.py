@@ -38,6 +38,14 @@ ARABIC_VEHICLE_REGISTRATION_TEXT = (
     "\u200fشهادة تسجيل\u200e\n"
     "\u200fالبطاقة الرمادية\u200e"
 )
+ARABIC_GENERIC_REPUBLIC_TEXT = (
+    "\u200fالجمهورية الجزائرية الديمقراطية الشعبية\u200e"
+)
+ARABIC_ID_CARD_SPECIFIC_TEXT = "بطاقة التعريف الوطنية"
+ARABIC_DRIVING_LICENSE_SPECIFIC_TEXT = "رخصة السياقة"
+ARABIC_DRIVING_LICENSE_OCR_VARIANT_TEXT = "رخصت السياقة"
+ARABIC_VEHICLE_REGISTRATION_SPECIFIC_TEXT = "شهادة تسجيل"
+ARABIC_VEHICLE_REGISTRATION_GRAY_CARD_TEXT = "البطاقة الرمادية"
 
 
 @pytest.mark.parametrize(
@@ -112,7 +120,21 @@ def test_slot_mismatch_requires_manual_review_not_rejection() -> None:
     assert result.decision != "REJECTED"
 
 
-def test_low_confidence_keywords_return_needs_review() -> None:
+def test_arabic_driving_license_ocr_variant_matches() -> None:
+    result = dc.classify_document(
+        "driving_license",
+        ocr_text=ARABIC_DRIVING_LICENSE_OCR_VARIANT_TEXT,
+    )
+
+    assert result.detected_type == "driving_license"
+    assert result.consistency == dc.CONSISTENCY_MATCH
+    assert result.decision == dc.DECISION_MATCH
+    assert result.manual_review_required is False
+    assert result.confidence >= 0.6 - 1e-9
+    assert ARABIC_DRIVING_LICENSE_OCR_VARIANT_TEXT in result.matched_keywords
+
+
+def test_generic_republic_keywords_return_ambiguous_review() -> None:
     config = dc.load_document_layouts()
     result = dc.classify_document(
         "id_card_front",
@@ -120,12 +142,88 @@ def test_low_confidence_keywords_return_needs_review() -> None:
         config=config,
     )
 
-    assert result.detected_type == "id_card"
+    assert result.detected_type is None
     assert result.confidence < config.min_confidence
     assert result.consistency == dc.CONSISTENCY_UNKNOWN
     assert result.decision == dc.DECISION_NEEDS_REVIEW
     assert result.manual_review_required is True
-    assert result.reason_code == dc.REASON_LOW_CONFIDENCE
+    assert result.reason_code == dc.REASON_AMBIGUOUS_KEYWORDS
+
+
+@pytest.mark.parametrize(
+    ("slot", "text", "expected_type", "specific_keyword"),
+    [
+        (
+            "id_card_front",
+            ARABIC_GENERIC_REPUBLIC_TEXT + "\n" + ARABIC_ID_CARD_SPECIFIC_TEXT,
+            "id_card",
+            ARABIC_ID_CARD_SPECIFIC_TEXT,
+        ),
+        (
+            "driving_license",
+            ARABIC_GENERIC_REPUBLIC_TEXT
+            + "\n"
+            + ARABIC_DRIVING_LICENSE_SPECIFIC_TEXT,
+            "driving_license",
+            ARABIC_DRIVING_LICENSE_SPECIFIC_TEXT,
+        ),
+    ],
+)
+def test_specific_arabic_title_overrides_generic_republic_phrase(
+    slot: str,
+    text: str,
+    expected_type: str,
+    specific_keyword: str,
+) -> None:
+    result = dc.classify_document(slot, ocr_text=text)
+
+    assert result.detected_type == expected_type
+    assert result.consistency == dc.CONSISTENCY_MATCH
+    assert result.decision == dc.DECISION_MATCH
+    assert specific_keyword in result.matched_keywords
+
+
+def test_generic_arabic_republic_phrase_alone_is_ambiguous() -> None:
+    result = dc.classify_document(
+        "driving_license",
+        ocr_text=ARABIC_GENERIC_REPUBLIC_TEXT,
+    )
+
+    assert result.detected_type is None
+    assert result.consistency == dc.CONSISTENCY_UNKNOWN
+    assert result.decision == dc.DECISION_NEEDS_REVIEW
+    assert result.manual_review_required is True
+    assert result.reason_code == dc.REASON_AMBIGUOUS_KEYWORDS
+
+
+def test_arabic_driving_license_title_on_id_card_slot_is_mismatch() -> None:
+    result = dc.classify_document(
+        "id_card_front",
+        ocr_text=ARABIC_GENERIC_REPUBLIC_TEXT
+        + "\n"
+        + ARABIC_DRIVING_LICENSE_SPECIFIC_TEXT,
+    )
+
+    assert result.detected_type == "driving_license"
+    assert result.consistency == dc.CONSISTENCY_MISMATCH
+    assert result.decision == dc.DECISION_NEEDS_REVIEW
+    assert result.manual_review_required is True
+    assert result.reason_code == dc.REASON_SLOT_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        ARABIC_VEHICLE_REGISTRATION_SPECIFIC_TEXT,
+        ARABIC_VEHICLE_REGISTRATION_GRAY_CARD_TEXT,
+    ],
+)
+def test_arabic_vehicle_registration_specific_titles_match(text: str) -> None:
+    result = dc.classify_document("vehicle_registration", ocr_text=text)
+
+    assert result.detected_type == "vehicle_registration"
+    assert result.consistency == dc.CONSISTENCY_MATCH
+    assert result.decision == dc.DECISION_MATCH
 
 
 def test_no_keyword_returns_needs_review() -> None:

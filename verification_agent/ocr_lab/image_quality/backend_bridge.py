@@ -14,6 +14,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,12 @@ QUALITY_GATE_USABLE = frozenset({STATUS_ACCEPTABLE, STATUS_POOR})
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 OCR_TIMEOUT_SECONDS = 20
 TESSERACT_LANGUAGE = "fra+ara"
+DEFAULT_EASYOCR_PYTHON_PATH = r"C:\orizzonte_easyocr_env\Scripts\python.exe"
+EASYOCR_RUNNER_PATH = Path(__file__).resolve().parents[2] / "easyocr_runner.py"
+EASYOCR_SLOTS = frozenset({"id_card_front", "id_card_back", "driving_license"})
+EASYOCR_TIMEOUT_SECONDS = 120
+EASYOCR_TEMP_PREFIX = "orizzonte_easyocr_"
+EASYOCR_STALE_TEMP_SECONDS = 3600
 
 
 class BridgeError(Exception):
@@ -111,6 +119,79 @@ def _tessdata_prefix(binary: str) -> str | None:
 
 def _tesseract_available() -> bool:
     return _tesseract_binary() is not None
+
+
+def _easyocr_python() -> str:
+    configured = os.environ.get("EASYOCR_PYTHON_PATH", "").strip()
+    return configured or DEFAULT_EASYOCR_PYTHON_PATH
+
+
+def _easyocr_available() -> bool:
+    return Path(_easyocr_python()).is_file() and EASYOCR_RUNNER_PATH.is_file()
+
+
+def _cleanup_stale_easyocr_temp_dirs() -> None:
+    """Remove temp directories left behind if an earlier process was killed."""
+
+    root = Path(tempfile.gettempdir())
+    now = time.time()
+    for entry in root.glob(f"{EASYOCR_TEMP_PREFIX}*"):
+        try:
+            if not entry.is_dir():
+                continue
+            if now - entry.stat().st_mtime < EASYOCR_STALE_TEMP_SECONDS:
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _run_easyocr(image_bytes: bytes) -> tuple[str | None, str]:
+    """Run EasyOCR in its isolated environment through a subprocess.
+
+    The image is written to a short-lived temporary file because EasyOCR reads
+    from a path.  Neither the path nor the recognized text is logged.
+    """
+
+    _cleanup_stale_easyocr_temp_dirs()
+    if not _easyocr_available():
+        return None, "UNAVAILABLE"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=EASYOCR_TEMP_PREFIX) as temp_dir:
+            image_path = Path(temp_dir) / "input.png"
+            image_path.write_bytes(image_bytes)
+            completed = subprocess.run(
+                [
+                    _easyocr_python(),
+                    str(EASYOCR_RUNNER_PATH),
+                    str(image_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=EASYOCR_TIMEOUT_SECONDS,
+                check=False,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "FAILED"
+
+    if completed.returncode != 0:
+        return None, "FAILED"
+
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8", errors="replace"))
+    except (UnicodeDecodeError, ValueError):
+        return None, "FAILED"
+    if not isinstance(payload, dict):
+        return None, "FAILED"
+
+    status = payload.get("status")
+    text = payload.get("text")
+    if status == "USED" and isinstance(text, str) and text.strip():
+        return text.strip(), "USED"
+    if status == "EMPTY":
+        return None, "EMPTY"
+    return None, "FAILED"
 
 
 def _run_tesseract(image_bytes: bytes) -> tuple[str | None, str]:
@@ -239,16 +320,67 @@ def _classify(
             None,
         )
 
+    easyocr_classification: ClassificationResult | None = None
+    easyocr_text: str | None = None
+    easyocr_status = "UNAVAILABLE"
+
+    if slot in EASYOCR_SLOTS:
+        easyocr_text, easyocr_status = _run_easyocr(image_bytes)
+        if easyocr_status == "USED" and easyocr_text is not None:
+            easyocr_classification = classify_after_quality(
+                quality,
+                slot,
+                ocr_text=easyocr_text,
+                config=config,
+            )
+            if easyocr_classification.detected_type is not None:
+                return (
+                    easyocr_classification.to_dict(),
+                    _ocr_metadata(
+                        used=True,
+                        available=True,
+                        source="easyocr",
+                        reason="OCR_USED",
+                    ),
+                    easyocr_text,
+                )
+
     text, ocr_status = _run_tesseract(image_bytes)
+    tesseract_classification: ClassificationResult | None = None
     if ocr_status == "USED" and text is not None:
-        classification = classify_after_quality(
+        tesseract_classification = classify_after_quality(
             quality,
             slot,
             ocr_text=text,
             config=config,
         )
+        if tesseract_classification.detected_type is not None:
+            return (
+                tesseract_classification.to_dict(),
+                _ocr_metadata(
+                    used=True,
+                    available=True,
+                    source="tesseract",
+                    reason="OCR_USED",
+                ),
+                text,
+            )
+
+    if easyocr_classification is not None:
         return (
-            classification.to_dict(),
+            easyocr_classification.to_dict(),
+            _ocr_metadata(
+                used=True,
+                available=True,
+                source="easyocr",
+                reason="OCR_USED",
+            ),
+            easyocr_text,
+        )
+
+    if tesseract_classification is not None:
+        return (
+            tesseract_classification.to_dict(),
             _ocr_metadata(
                 used=True,
                 available=True,
@@ -259,7 +391,9 @@ def _classify(
         )
 
     classification = _no_ocr_result(slot, config)
-    available = ocr_status != "UNAVAILABLE"
+    available = (
+        ocr_status != "UNAVAILABLE" or easyocr_status != "UNAVAILABLE"
+    )
     reason = "NO_OCR" if not available else "OCR_FAILED"
     return (
         classification.to_dict(),

@@ -3,7 +3,8 @@
 The backend virtual environment intentionally does not contain OpenCV or numpy.
 The image-quality/classification module therefore runs in its own existing
 virtual environment through a JSON stdin/stdout bridge.  No uploaded filename,
-path, OCR text, or image content is written to disk or logged here.
+path, OCR text, or image content is logged here.  The bridge uses a short-lived
+temporary file solely to pass the image to the isolated EasyOCR subprocess.
 """
 
 from __future__ import annotations
@@ -60,12 +61,14 @@ def _bridge_working_directory() -> Path:
 
 
 def _timeout_seconds() -> float:
-    configured = getattr(settings, "VERIFICATION_AGENT_TIMEOUT_SECONDS", 30)
+    # EasyOCR loads its models in a fresh subprocess on every request, so the
+    # default must allow for model startup as well as OCR on a phone photo.
+    configured = getattr(settings, "VERIFICATION_AGENT_TIMEOUT_SECONDS", 180)
     try:
         value = float(configured)
     except (TypeError, ValueError):
-        return 30.0
-    return value if value > 0 else 30.0
+        return 180.0
+    return value if value > 0 else 180.0
 
 
 def run_verification(

@@ -5,9 +5,10 @@
 This is a standalone, offline **image-quality gate** and **upload-slot consistency
 classifier**. The gate decides whether a photo is technically suitable for a later OCR
 stage. The classifier then checks whether OCR text is consistent with the declared slot.
-The core package does not bundle an OCR engine; the optional `backend_bridge.py` used by
-Django can invoke a local Tesseract installation. It does not perform biometrics, identity
-matching, or fraud detection.
+The core package does not bundle an OCR engine. The optional `backend_bridge.py` used by
+Django invokes EasyOCR for Arabic document slots through an isolated subprocess
+environment and falls back to a local Tesseract installation. It does not perform
+biometrics, identity matching, or fraud detection.
 
 The module is **not production-ready**:
 
@@ -47,9 +48,10 @@ The classifier runs only after the quality gate returns `ACCEPTABLE_QUALITY` or
 `POOR_QUALITY`. A `NEEDS_RECAPTURE` result blocks classification with
 `QUALITY_GATE_BLOCKED`.
 
-The core classifier accepts OCR text from the caller. The Django bridge can obtain that
-text from a local Tesseract installation; the classifier itself does not bundle an OCR
-engine:
+The core classifier accepts OCR text from the caller. The Django bridge obtains that text
+from EasyOCR for `id_card_front`, `id_card_back`, and `driving_license`, and from
+Tesseract for other text slots or when EasyOCR is unavailable or fails. The classifier
+itself does not bundle an OCR engine:
 
 ```python
 from image_quality import classify_after_quality
@@ -58,21 +60,26 @@ result = classify_after_quality(quality_result, "id_card_front", ocr_text=text)
 ```
 
 Text is normalized for accents, punctuation, and whitespace, then matched against
-configurable public-title keywords in `document_layouts.json`. The default entries are:
+configurable public-title keywords in `document_layouts.json`. Each keyword has a
+weight and a `specific` flag. The default entries are:
 
-| Type | Public keywords |
-| --- | --- |
-| `id_card` | `REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE`, `CARTE NATIONALE D'IDENTITE`, `الجمهورية الجزائرية الديمقراطية الشعبية`, `بطاقة التعريف الوطنية` |
-| `driving_license` | `PERMIS DE CONDUIRE`, `REPUBLIQUE ALGERIENNE`, `رخصة السياقة`, `الجمهورية الجزائرية` |
-| `vehicle_registration` | `CERTIFICAT D'IMMATRICULATION`, `CARTE GRISE`, `شهادة تسجيل`, `البطاقة الرمادية` |
-| `selfie` | no text keywords; face presence only |
+| Type | Specific public titles (weight) | Generic context (weight) |
+| --- | --- | --- |
+| `id_card` | `CARTE NATIONALE D'IDENTITE` (3.0), `بطاقة التعريف الوطنية` (5.0) | `REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE` (0.5), `الجمهورية الجزائرية الديمقراطية الشعبية` (0.5) |
+| `driving_license` | `PERMIS DE CONDUIRE` (3.0), `رخصة السياقة` (5.0), `السياقة` (4.0), `رخصت السياقة` (3.0, OCR variant) | `REPUBLIQUE ALGERIENNE` (0.5), `الجمهورية الجزائرية` (0.5) |
+| `vehicle_registration` | `CERTIFICAT D'IMMATRICULATION` (3.0), `CARTE GRISE` (2.0), `شهادة تسجيل` (5.0), `البطاقة الرمادية` (3.0) | none |
+| `selfie` | no text keywords; face presence only | none |
 
-Each keyword has a configurable weight. Latin and Arabic keywords are scored
-independently, so a document matching either language can reach `min_confidence`; a
-close second candidate is treated as ambiguous. The result contains `declared_slot`,
-`expected_type`, `detected_type`, `confidence`, `consistency` (`MATCH`, `MISMATCH`, or
-`UNKNOWN`), `decision` (`MATCH`, `NEEDS_REVIEW`, or `QUALITY_GATE_BLOCKED`),
-`manual_review_required`, and a machine-readable `reason_code`.
+Specific titles determine the document type. Generic republic phrases are context only
+and never determine a type by themselves: text containing only a generic phrase returns
+`NEEDS_REVIEW` with `reason_code: "AMBIGUOUS_KEYWORDS"` and `detected_type: null`.
+Latin and Arabic keywords are scored independently; the strongest specific keyword in a
+script sets the confidence denominator, so any primary specific title can reach
+`min_confidence`. A close second specific candidate is treated as ambiguous. The result
+contains `declared_slot`, `expected_type`, `detected_type`, `confidence`, `consistency`
+(`MATCH`, `MISMATCH`, or `UNKNOWN`), `decision` (`MATCH`, `NEEDS_REVIEW`, or
+`QUALITY_GATE_BLOCKED`), `manual_review_required`, and a machine-readable
+`reason_code`.
 
 A mismatch is always `NEEDS_REVIEW`, never an automatic rejection. Low confidence, no
 keyword, conflicting keywords, a missing selfie face, and an unavailable face detector
@@ -83,8 +90,10 @@ texture, appearance, biometric, or identity matching is used.
 ## Tesseract OCR bridge
 
 `backend_bridge.py` invokes Tesseract only when `allow_ocr` is true and no trusted
-`ocr_text` is supplied. It uses `fra+ara` by default, honors `TESSERACT_CMD`,
-`TESSERACT_LANGUAGE`, and `TESSDATA_PREFIX`, and auto-detects a per-user install at
+`ocr_text` is supplied. Tesseract handles `vehicle_registration`, acts as the fallback
+for the EasyOCR document slots, and is used when the EasyOCR environment is unavailable.
+It uses `fra+ara` by default, honors `TESSERACT_CMD`, `TESSERACT_LANGUAGE`, and
+`TESSDATA_PREFIX`, and auto-detects a per-user install at
 `%LOCALAPPDATA%\Programs\Tesseract-OCR` or a standard install at
 `C:\Program Files\Tesseract-OCR`.
 
@@ -104,9 +113,86 @@ Windows setup:
    both `fra` and `ara`).
 
 The bridge returns only OCR metadata (`used`, `available`, `source`, `reason`) by
-default. Raw Tesseract text is returned only when the internal `debug_ocr` flag is
-explicitly set; the HTTP endpoint enables it only with `DEBUG=True`,
+default. Raw OCR text is returned only when the internal `debug_ocr` flag is explicitly
+set; the HTTP endpoint enables it only with `DEBUG=True`,
 `VERIFICATION_AGENT_DEBUG_OCR=True`, and `?debug=1`.
+
+## EasyOCR bridge for Arabic document slots
+
+EasyOCR is the primary OCR engine for `id_card_front`, `id_card_back`, and
+`driving_license`. Tesseract remains the fallback for those slots and the primary engine
+for `vehicle_registration` and other non-face slots.
+
+EasyOCR and PyTorch are **not** installed in the Django backend or the
+`verification_agent` virtual environment. The bridge calls a separate environment with
+`subprocess.run`:
+
+```text
+backend_bridge.py
+  -> temp image path
+  -> <EASYOCR_PYTHON_PATH> verification_agent/easyocr_runner.py <temp image path>
+  -> JSON on stdout: {"status": "USED" | "EMPTY" | "FAILED", "text": "..."}
+  -> classification
+  -> temp file deleted
+```
+
+`easyocr_runner.py` runs `easyocr.Reader(["ar", "en"], gpu=False)` and prints only one
+JSON object to stdout. EasyOCR library output is redirected to stderr. The bridge never
+logs the temporary path, the recognized text, or the image content. Raw text is returned
+to the caller only through the existing `debug_ocr` gate.
+
+The Python executable is configurable with `EASYOCR_PYTHON_PATH`. Its default is:
+
+```text
+C:\orizzonte_easyocr_env\Scripts\python.exe
+```
+
+The runner path is resolved relative to the repository, so no absolute runner path is
+stored. The EasyOCR subprocess timeout is 120 seconds. The Django bridge timeout,
+`VERIFICATION_AGENT_TIMEOUT_SECONDS`, defaults to 180 seconds so it can finish the
+EasyOCR subprocess, run the Tesseract fallback, and clean up the temporary file. Increase
+it on slower machines.
+
+Fallback behavior:
+
+- missing environment, missing runner, subprocess error, or timeout: Tesseract;
+- EasyOCR returns no text: Tesseract;
+- EasyOCR returns no detected document type (generic-only ambiguity or no keyword):
+  Tesseract is tried, then the EasyOCR result is kept if Tesseract also finds no type;
+- EasyOCR or Tesseract detects a specific document title: that classification is
+  returned;
+- both engines fail: `NEEDS_REVIEW` with `reason_code: "NO_OCR"`.
+
+### Install EasyOCR on a new machine
+
+Use Python 3.11 or 3.12. Python 3.13 is not supported by this EasyOCR/PyTorch
+combination. Create the environment outside the project so the backend stays lightweight:
+
+```powershell
+py -3.12 -m venv C:\orizzonte_easyocr_env
+C:\orizzonte_easyocr_env\Scripts\python.exe -m pip install --upgrade pip
+C:\orizzonte_easyocr_env\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+C:\orizzonte_easyocr_env\Scripts\python.exe -m pip install easyocr==1.7.2
+```
+
+Set `EASYOCR_PYTHON_PATH` when the environment is not at the default location:
+
+```powershell
+$env:EASYOCR_PYTHON_PATH = "D:\ocr\easyocr-env\Scripts\python.exe"
+```
+
+Verify the runner with the synthetic Arabic fixture (public titles only, no identity
+data):
+
+```powershell
+C:\orizzonte_easyocr_env\Scripts\python.exe `
+  C:\Users\THINKPAD\Desktop\orizzonte-backend-app\verification_agent\easyocr_runner.py `
+  C:\Users\THINKPAD\Desktop\orizzonte-backend-app\verification_agent\ocr_lab\image_quality\tests\assets\arabic_id_specimen.png
+```
+
+The first EasyOCR run downloads its detection and recognition models into the user cache
+and therefore needs network access. Later runs use the cache. Do not install EasyOCR or
+PyTorch into the Django or `verification_agent` environments.
 
 ## Install and test (from `verification_agent/`)
 
@@ -631,21 +717,25 @@ only.
 
 ## Privacy and offline behavior
 
-- Images are decoded and processed entirely in memory.
+- Images are decoded and processed entirely in memory by the core module.
 - The input file is never modified.
-- No debug images, resized copies, crops, or intermediate files are written.
+- The CLI never writes debug images, resized copies, crops, or intermediate files. The
+  Django bridge writes one short-lived temporary file only to pass the image to the
+  isolated EasyOCR subprocess and deletes it immediately.
 - `analyze`, `calibrate`, and `evaluate` output contains no file path, file name, image
   content, base64, OCR text, face data, or identity data.
 - `evaluate` reports only aggregate counts (`missing_files_count`,
   `ambiguous_files_count`, `normalized_matches_count`) and generic warning codes; it does
   not echo label filenames or group names.
 - There is no bundled OCR engine, no biometrics, no identity comparison, and no fraud
-  decision. The optional bridge can call a separately installed Tesseract binary.
+  decision. The optional bridge can call separate EasyOCR and Tesseract installations.
 - Classification consumes OCR text and returns only public keyword matches, not the raw
-  OCR text. The bridge never returns recognized text. A selfie slot may run an optional
-  OpenCV Haar face-presence check; no face data or embeddings are stored.
-- There is no network access during analysis. The test suite blocks `socket.socket` and
-  confirms analysis still succeeds.
+  OCR text. Outside the explicit `debug_ocr` gate, the bridge never returns recognized
+  text. A selfie slot may run an optional OpenCV Haar face-presence check; no face data or
+  embeddings are stored.
+- There is no network access during in-process analysis. The test suite blocks
+  `socket.socket` and confirms analysis still succeeds. The first EasyOCR run may download
+  models; later OCR subprocesses use the local model cache.
 - The CLI prints JSON only to stdout. Structured errors do not include tracebacks or
   paths.
 
@@ -657,10 +747,12 @@ verification_agent/
   requirements-dev.txt
   pytest.ini
   README.md                         # short setup pointer
+  easyocr_runner.py                 # isolated EasyOCR subprocess entry point
   ocr_lab/image_quality/
     __init__.py                     # public analyze_bytes / analyze_path
     __main__.py                     # python -m image_quality
     analyzer.py                     # orchestration and structured errors
+    backend_bridge.py               # Django stdin/stdout bridge and OCR fallback
     cli.py                          # analyze / calibrate / evaluate
     decision_engine.py              # rule-based decision and trace
     document_classification.py      # Phase 3 slot/type keyword consistency
@@ -700,6 +792,8 @@ bytes/path
   -> decision engine (critical / moderate / acceptable)
   -> schema validation
   -> versioned quality JSON
+  -> backend_bridge (optional): EasyOCR subprocess for Arabic slots,
+     Tesseract fallback for other slots or failed EasyOCR
   -> classify_after_quality (usable statuses only)
   -> slot/type consistency JSON (MATCH / NEEDS_REVIEW)
 ```
@@ -729,8 +823,10 @@ persistence, Youden-J metric separation, soft-blur threshold bands,
 false-acceptance/false-rejection math, Phase 3 keyword classification for every slot,
 slot/type mismatch to `NEEDS_REVIEW`, low confidence, no keyword, ambiguous keywords,
 selfie face fallback, configurable layouts, quality-gate blocking, OCR-text privacy,
-Tesseract bridge integration with synthetic known and wrong document text, file
-immutability, no debug files, and blocked network sockets.
+Tesseract bridge integration with synthetic known and wrong document text, mocked
+EasyOCR subprocess JSON for Arabic ID classification, EasyOCR failure fallback to
+Tesseract, both-engines-failed `NEEDS_REVIEW`, file immutability, no debug files, and
+blocked network sockets.
 
 A 12-megapixel timing benchmark is available from `verification_agent/ocr_lab`:
 
@@ -765,6 +861,9 @@ a synthetic local measurement, not a production latency guarantee.
   consistency. It performs no face comparison, liveness check, or biometric analysis.
 - Classification depends on OCR text quality and public-title keywords. It does not
   verify authenticity, extract personal fields, or prove document validity.
+- EasyOCR runs in a separate environment of roughly 2 GB and loads its models in each
+  subprocess call. Expect higher latency than Tesseract; the default bridge timeout is
+  180 seconds. The first run needs network access to download models.
 - The module does not decide identity, authenticity, fraud, or document validity.
 - The core module is not wired into Django; the separate `backend_bridge.py` is the
   read-only stdin/stdout integration point. No models, database, `.env`, frontend, or

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "notes": "Public document titles only. No personal data. Keywords are matched against OCR text supplied by the caller.",
+  "notes": "Public document titles only. No personal data. Keywords are matched against OCR text supplied by the caller. 'specific' marks a public title that identifies the document type; generic republic phrases are context only and never determine the type by themselves.",
   "min_confidence": 0.6,
   "min_confidence_margin": 0.2,
   "slots": {
@@ -30,19 +30,23 @@
       "keywords": [
         {
           "text": "REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE",
-          "weight": 2.0
+          "weight": 0.5,
+          "specific": false
         },
         {
           "text": "CARTE NATIONALE D'IDENTITE",
-          "weight": 3.0
+          "weight": 3.0,
+          "specific": true
         },
         {
           "text": "الجمهورية الجزائرية الديمقراطية الشعبية",
-          "weight": 2.0
+          "weight": 0.5,
+          "specific": false
         },
         {
           "text": "بطاقة التعريف الوطنية",
-          "weight": 3.0
+          "weight": 5.0,
+          "specific": true
         }
       ]
     },
@@ -50,19 +54,33 @@
       "keywords": [
         {
           "text": "PERMIS DE CONDUIRE",
-          "weight": 3.0
+          "weight": 3.0,
+          "specific": true
         },
         {
           "text": "REPUBLIQUE ALGERIENNE",
-          "weight": 1.0
+          "weight": 0.5,
+          "specific": false
         },
         {
           "text": "رخصة السياقة",
-          "weight": 3.0
+          "weight": 5.0,
+          "specific": true
+        },
+        {
+          "text": "السياقة",
+          "weight": 4.0,
+          "specific": true
+        },
+        {
+          "text": "رخصت السياقة",
+          "weight": 3.0,
+          "specific": true
         },
         {
           "text": "الجمهورية الجزائرية",
-          "weight": 1.0
+          "weight": 0.5,
+          "specific": false
         }
       ]
     },
@@ -70,19 +88,23 @@
       "keywords": [
         {
           "text": "CERTIFICAT D'IMMATRICULATION",
-          "weight": 3.0
+          "weight": 3.0,
+          "specific": true
         },
         {
           "text": "CARTE GRISE",
-          "weight": 2.0
+          "weight": 2.0,
+          "specific": true
         },
         {
           "text": "شهادة تسجيل",
-          "weight": 3.0
+          "weight": 5.0,
+          "specific": true
         },
         {
           "text": "البطاقة الرمادية",
-          "weight": 2.0
+          "weight": 3.0,
+          "specific": true
         }
       ]
     },

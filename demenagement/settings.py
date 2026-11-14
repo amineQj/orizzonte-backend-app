@@ -264,7 +264,7 @@ AI_AUTO_APPROVE_MIN_CONFIDENCE = float(
 # Leave empty to auto-detect verification_agent/.venv in the project.
 VERIFICATION_AGENT_PYTHON = os.environ.get('VERIFICATION_AGENT_PYTHON', '')
 VERIFICATION_AGENT_TIMEOUT_SECONDS = float(
-    os.environ.get('VERIFICATION_AGENT_TIMEOUT_SECONDS', '30')
+    os.environ.get('VERIFICATION_AGENT_TIMEOUT_SECONDS', '180')
 )
 # Useful when a deployment deliberately wants classification without OCR.
 VERIFICATION_AGENT_DISABLE_OCR = (

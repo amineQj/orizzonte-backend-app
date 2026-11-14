@@ -1,13 +1,17 @@
 # ORIZZONTE verification agent workspace
 
-This workspace contains the standalone Phase 2 image-quality module:
+This workspace contains the standalone Phase 2/3 image-quality and
+document-classification module:
 
 - module: `ocr_lab/image_quality/`
 - documentation: `ocr_lab/image_quality/README.md`
 - tests: `ocr_lab/image_quality/tests/`
+- isolated OCR runner: `easyocr_runner.py`
 
-The module is offline, in-memory, OCR-free, face-detection-free, and uncalibrated. It is
-not production-ready.
+The core module is offline, in-memory, and uncalibrated. OCR is available only through
+the optional `ocr_lab/image_quality/backend_bridge.py`, which calls isolated EasyOCR and
+Tesseract installations. EasyOCR and PyTorch are not installed in this workspace's
+virtual environment. The module is not production-ready.
 
 ## Environment and tests
 
@@ -39,6 +43,7 @@ calibration rules, privacy behavior, test coverage, benchmark, and limitations.
 
 ## Scope boundary
 
-Do not add OCR, Django integration, face detection/biometrics, or Phase 3 work in this
-phase. Do not call the module production-ready based on synthetic tests. It remains
-`UNCALIBRATED` until a human owner validates real, consented specimens.
+Do not install EasyOCR or PyTorch in this virtual environment. The bridge is the only
+Django integration point, and OCR engines remain separate subprocesses. Do not call the
+module production-ready based on synthetic tests. It remains `UNCALIBRATED` until a human
+owner validates real, consented specimens.

@@ -20,6 +20,17 @@ pytestmark = pytest.mark.skipif(
     reason="Tesseract OCR is not installed",
 )
 
+
+@pytest.fixture(autouse=True)
+def _force_tesseract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this file focused on the Tesseract path.
+
+    EasyOCR has its own mocked regression tests in test_easyocr_bridge.py.
+    """
+
+    monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: False)
+
+
 ID_CARD_OCR_TEXT = (
     "REPUBLIQUE ALGERIENNE DEMOCRATIQUE ET POPULAIRE\n"
     "CARTE NATIONALE D'IDENTITE\n"
