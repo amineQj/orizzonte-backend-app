@@ -629,3 +629,138 @@ def create_mission_from_request(client, data: dict[str, Any]) -> Mission:
     if data.get("pricing_new_flow"):
         return confirm_new_without_quote(client, data)
     return create_mission(client, data)
+# ---------------------------------------------------------------------------
+# Pricing configuration management (boss-only)
+# ---------------------------------------------------------------------------
+
+
+def _deep_merge(base, override):
+    result = dict(base)
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _validate_pricing_ranges(parameters):
+    errors = {}
+
+    if "multiplier_cap" in parameters:
+        try:
+            v = float(parameters["multiplier_cap"])
+            if v < 1.0 or v > 3.0:
+                errors["multiplier_cap"] = "Must be between 1.0 and 3.0."
+        except (TypeError, ValueError):
+            errors["multiplier_cap"] = "Must be a number between 1.0 and 3.0."
+
+    if "commission_rate" in parameters:
+        try:
+            v = float(parameters["commission_rate"])
+            if v < 0.0 or v > 0.5:
+                errors["commission_rate"] = "Must be between 0.0 and 0.5."
+        except (TypeError, ValueError):
+            errors["commission_rate"] = "Must be a number between 0.0 and 0.5."
+
+    if "estimate_band" in parameters:
+        try:
+            v = float(parameters["estimate_band"])
+            if v < 0.0 or v > 0.5:
+                errors["estimate_band"] = "Must be between 0.0 and 0.5."
+        except (TypeError, ValueError):
+            errors["estimate_band"] = "Must be a number between 0.0 and 0.5."
+
+    neg = parameters.get("negotiation")
+    if isinstance(neg, dict):
+        neg_errors = {}
+        if "tolerance" in neg:
+            try:
+                v = float(neg["tolerance"])
+                if v < 0.0 or v > 0.5:
+                    neg_errors["tolerance"] = "Must be between 0.0 and 0.5."
+            except (TypeError, ValueError):
+                neg_errors["tolerance"] = "Must be a number between 0.0 and 0.5."
+        if "max_offers" in neg:
+            val = neg["max_offers"]
+            if isinstance(val, bool) or not isinstance(val, int) or val < 1 or val > 5:
+                neg_errors["max_offers"] = "Must be an integer between 1 and 5."
+        if "offer_ttl_minutes" in neg:
+            val = neg["offer_ttl_minutes"]
+            if isinstance(val, bool) or not isinstance(val, int) or val < 5 or val > 60:
+                neg_errors["offer_ttl_minutes"] = "Must be an integer between 5 and 60."
+        if "total_ttl_minutes" in neg:
+            val = neg["total_ttl_minutes"]
+            if isinstance(val, bool) or not isinstance(val, int) or val < 10 or val > 120:
+                neg_errors["total_ttl_minutes"] = "Must be an integer between 10 and 120."
+        if neg_errors:
+            errors["negotiation"] = neg_errors
+
+    vc = parameters.get("vehicle_classes")
+    if isinstance(vc, dict):
+        vc_errors = {}
+        for cls_name, cls_params in vc.items():
+            if isinstance(cls_params, dict):
+                cls_errors = {}
+                for field in ("base", "per_km", "per_min", "min_fare"):
+                    if field in cls_params:
+                        val = cls_params[field]
+                        if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+                            cls_errors[field] = "Must be a positive integer."
+                if cls_errors:
+                    vc_errors[cls_name] = cls_errors
+        if vc_errors:
+            errors["vehicle_classes"] = vc_errors
+
+    return errors
+
+
+def update_pricing_config(boss, parameters, now=None):
+    from django.db.models import Max
+    from rest_framework import serializers
+
+    now = now or timezone.now()
+    current = get_active_config()
+    current_params = current.parameters or {}
+
+    merged = _deep_merge(current_params, parameters)
+    merged["calibrated"] = False
+    max_version = PricingConfig.objects.aggregate(Max("version"))["version__max"] or 0
+    new_version = max(current.version + 1, max_version + 1)
+    merged["version"] = new_version
+
+    range_errors = _validate_pricing_ranges(merged)
+    if range_errors:
+        raise serializers.ValidationError(range_errors)
+
+    try:
+        Configuration.from_mapping(merged)
+    except PricingError as exc:
+        field = exc.field or "parameters"
+        raise serializers.ValidationError({field: exc.message}) from exc
+
+    with transaction.atomic():
+        new_config = PricingConfig.objects.create(
+            version=new_version,
+            calibrated=False,
+            is_active=True,
+            parameters=merged,
+            notes=DEFAULT_CONFIG_NOTE,
+            created_by=boss,
+        )
+
+    record_pricing_audit(
+        actor=boss,
+        action="config_updated",
+        payload={
+            "old_config_version": current.version,
+            "new_config_version": new_config.version,
+            "changes": parameters,
+        },
+    )
+
+    return new_config

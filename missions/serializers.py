@@ -477,3 +477,32 @@ class BossDashboardSerializer(serializers.Serializer):
     monthly_revenue       = serializers.DecimalField(max_digits=14, decimal_places=2)
     monthly_overview      = MonthlyOverviewEntrySerializer(many=True)
  
+
+
+# ---------------------------------------------------------------------------
+# Pricing configuration management (boss-only)
+# ---------------------------------------------------------------------------
+
+
+class PricingConfigSerializer(serializers.Serializer):
+    """Read serializer for a PricingConfig row (boss view)."""
+
+    version = serializers.IntegerField(read_only=True)
+    calibrated = serializers.BooleanField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+    parameters = serializers.JSONField(read_only=True)
+
+
+class PricingConfigUpdateSerializer(serializers.Serializer):
+    """Validate the update request body."""
+
+    password = serializers.CharField(write_only=True, required=True)
+    parameters = serializers.JSONField(required=True)
+
+    def validate_parameters(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Parameters must be a JSON object.")
+        value.pop("version", None)
+        value.pop("calibrated", None)
+        return value

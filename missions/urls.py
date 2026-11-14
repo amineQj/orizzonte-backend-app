@@ -20,6 +20,10 @@ Which gives you:
 """
 from django.urls import path
 
+from .pricing_config_views import (
+    PricingConfigUpdateView,
+    PricingConfigView,
+)
 from .negotiation_views import (
     MissionNegotiationView,
     NegotiationAcceptView,
@@ -48,6 +52,8 @@ app_name = "missions"
 urlpatterns = [
     # ── Pricing ──────────────────────────────────────────────────────────────
     path("pricing/rules/", PricingRulesView.as_view(), name="pricing-rules"),
+    path("pricing/config/", PricingConfigView.as_view(), name="pricing-config"),
+    path("pricing/config/update/", PricingConfigUpdateView.as_view(), name="pricing-config-update"),
 
     # ── Client ──────────────────────────────────────────────────────────────
     path("missions/estimate/", PriceEstimateView.as_view(), name="mission-estimate"),

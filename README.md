@@ -36,10 +36,12 @@ review decision.
 6. [API endpoints](#6-api-endpoints)
 7. [Module structure](#7-module-structure)
 8. [Configuration files](#8-configuration-files)
-9. [Testing](#9-testing)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Contributing](#11-contributing)
-12. [License / credits](#12-license--credits)
+9. [Pricing and negotiation engine](#9-pricing-and-negotiation-engine)
+10. [Boss pricing configuration](#10-boss-pricing-configuration)
+11. [Testing](#11-testing)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Contributing](#13-contributing)
+14. [License / credits](#14-license--credits)
 
 ---
 
@@ -1035,7 +1037,71 @@ Scoring rules:
 
 ---
 
-## 9. Testing
+## 9. Pricing and negotiation engine
+
+### 9.1 Pricing engine (Phase 5 - Stage 1)
+
+Estimates the price of a moving mission based on distance, vehicle class, helpers,
+floors, time multipliers, etc.
+
+**Formula:** (base + km*per_km + min*per_min + extras) * multiplier, then min fare,
+rounding to 10 DA, band +/-10 % (15 % when confidence is low).
+
+**Configuration:** PricingConfig model (versioned, calibrated: false until real
+quotes). Seeded from missions/data/pricing_v1.json (placeholder values).
+
+**Endpoints:**
+- POST /api/missions/estimate/ - estimate price (legacy amount kept, estimate object added).
+- POST /api/missions/confirm/ - confirm and create mission (legacy / quote / fresh engine).
+- GET /api/pricing/rules/ - public tariff and negotiation rules (commission rate hidden).
+
+**Quote lifecycle:** created at estimate (TTL 30 min), single-use, revalidated at
+confirm. No GPS stored. See PRICING_CALIBRATION.md.
+
+### 9.2 Negotiation engine (Phase 5 - Stage 2)
+
+Allows a driver and a client to negotiate the price of a mission.
+
+**Rules:** first offer by driver, alternating driver/client, max 3 offers (last is
+final), offers within [0.85E, 1.15E] of the base estimate E, monotonic concessions
+(client lowers, driver raises), min step 10 DA.
+
+**Hold:** mission held for the driver for 15 min (held_by, hold_expires_at),
+lazy expiry + expire_pricing command.
+
+**Endpoints:**
+- GET /api/missions/<id>/negotiation/ - read negotiation (participant only).
+- POST /api/missions/<id>/negotiation/offer/ - make an offer (opens or counters).
+- POST /api/missions/<id>/negotiation/accept/ - accept latest offer, assign driver, lock price.
+- POST /api/missions/<id>/negotiation/decline/ - decline, mission stays pending.
+
+**Security:** non-participants get 404, role failures 403, idempotency via unique
+(negotiation, idempotency_key), no PII in tables or logs.
+
+### 9.3 Boss pricing configuration (Phase 6)
+
+Allows the boss to modify pricing parameters (per_km, ase, commission_rate,
+etc.).
+
+**Security:** requires the boss's own password (re-entered) + JWT. Throttled 5/min.
+
+**Endpoints:**
+- GET /api/pricing/config/ - current active config.
+- POST /api/pricing/config/update/ - partial update (password + parameters).
+
+**Audit:** every change creates a PricingConfig row (new version) and a
+PricingAuditLog row. Old versions are kept for audit trail.
+
+---
+
+## 10. Boss pricing configuration
+
+See section 9.3 above. Full details in API_DOCS.md section 14.
+
+---
+
+## 11. Testing
+
 
 All automated tests use synthetic `SPECIMEN / TEST` images or mocked OCR
 responses. Do not add real names, document numbers, photos, or OCR text to the
@@ -1121,7 +1187,7 @@ consented specimens, an agreed label set, and a documented review.
 
 ---
 
-## 10. Troubleshooting
+## 12. Troubleshooting
 
 ### Django will not start: `drivers.E001` / `PRIVATE_MEDIA_ROOT`
 
@@ -1341,7 +1407,7 @@ you need to diagnose the bridge.
 
 ---
 
-## 11. Contributing
+## 13. Contributing
 
 ### Add a new document type
 
@@ -1419,7 +1485,7 @@ Calibration requirements:
 [ ] No real identity data in code, tests, fixtures, logs, or screenshots
 [ ] No secrets in Git
 [ ] Module tests pass: 201 passed
-[ ] Backend tests pass: 164 tests, OK (skipped=1)
+[ ] Backend tests pass: 336 tests, OK (skipped=1)
 [ ] EasyOCR and PyTorch remain isolated in C:\orizzonte_easyocr_env
 [ ] README and .env.example updated for new variables
 [ ] Changes reviewed before commit
@@ -1429,7 +1495,7 @@ Do not commit or push changes until they have been reviewed and verified.
 
 ---
 
-## 12. License / credits
+## 14. License / credits
 
 ### License
 

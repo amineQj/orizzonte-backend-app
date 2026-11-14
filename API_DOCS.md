@@ -845,4 +845,68 @@ python manage.py create_boss --email <email>
 with open('API_DOCS.md', 'a', encoding='utf-8') as f:
     f.write(content)
 print('appended', len(content), 'chars')
-"
+"---
+
+## 14. Gestion de la configuration tarifaire (boss uniquement)
+
+Préfixe : `/api/pricing/`. Toutes ces routes exigent un JWT avec `role="boss"`.
+
+### 14.1 Lire la configuration active - `GET /api/pricing/config/`
+
+- **Rôle** : `boss`.
+- **`200 OK`** :
+  ```json
+  {
+    "version": 1,
+    "calibrated": false,
+    "created_at": "2026-11-14T14:00:00Z",
+    "updated_at": "2026-11-14T14:00:00Z",
+    "parameters": { ... tous les paramètres tarifaires ... }
+  }
+  ```
+- **`403`** si non-boss.
+
+### 14.2 Mettre à jour la configuration - `POST /api/pricing/config/update/`
+
+- **Rôle** : `boss`.
+- **Throttle** : 5 requêtes par minute par utilisateur.
+- **Body** :
+  ```json
+  {
+    "password": "<mot de passe du boss, ressaisi>",
+    "parameters": {
+      "commission_rate": 0.15,
+      "multiplier_cap": 1.6,
+      "negotiation": { "max_offers": 4, "offer_ttl_minutes": 20 }
+    }
+  }
+  ```
+  `parameters` est une mise à jour **partielle** : seuls les champs fournis sont
+  écrasés, les autres sont conservés. `version` et `calibrated` sont gérés
+  côté serveur (`calibrated` reste `false`).
+- **`200 OK`** : nouvelle configuration active (même forme que le GET).
+  Une nouvelle ligne `PricingConfig` (version + 1) est créée et activée
+  atomiquement ; l'ancienne est désactivée.
+- **`403`** : `invalid_password` si le mot de passe est incorrect.
+- **`400`** : erreurs de validation avec champs explicites :
+  - `multiplier_cap` : doit être entre 1.0 et 3.0.
+  - `commission_rate` : doit être entre 0.0 et 0.5.
+  - `estimate_band` : doit être entre 0.0 et 0.5.
+  - `negotiation.tolerance` : doit être entre 0.0 et 0.5.
+  - `negotiation.max_offers` : doit être entre 1 et 5.
+  - `negotiation.offer_ttl_minutes` : doit être entre 5 et 60.
+  - `negotiation.total_ttl_minutes` : doit être entre 10 et 120.
+  - `vehicle_classes.<classe>.{base,per_km,per_min,min_fare}` : entiers positifs.
+- **`429`** : trop de requêtes (throttle).
+- **Audit** : chaque mise à jour réussie crée une ligne `PricingAuditLog`
+  (`action = "config_updated"`, `actor` = boss, `payload` = `{old_config_version,
+  new_config_version, changes}` — jamais le mot de passe).
+
+### 14.3 Codes d'erreur (Phase 5)
+
+| `code` | HTTP | Ou | Sens |
+|---|---|---|---|
+| `invalid_password` | 403 | config/update | Mot de passe du boss incorrect |
+| *(throttle)* | 429 | config/update | Plus de 5 tentatives par minute |
+
+---
