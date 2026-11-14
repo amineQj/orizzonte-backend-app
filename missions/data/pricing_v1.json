@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "calibrated": false,
+  "rounding_step": 10,
+  "vehicle_classes": {
+    "standard": {"base": 150, "per_km": 50, "per_min": 5, "min_fare": 300},
+    "van": {"base": 400, "per_km": 90, "per_min": 8, "min_fare": 1000},
+    "truck": {"base": 800, "per_km": 140, "per_min": 12, "min_fare": 2500}
+  },
+  "extras": {
+    "helper_hourly": 600,
+    "per_floor_fee": 150,
+    "max_helpers": 4,
+    "max_floors": 10
+  },
+  "time_multipliers": {"peak": 1.15, "night": 1.10, "weekend": 1.05},
+  "peak_hours": [[7, 9], [16, 19]],
+  "night_hours": [[22, 5]],
+  "multiplier_cap": 1.5,
+  "estimate_band": 0.10,
+  "low_confidence_extra_band": 0.05,
+  "distance_bounds": {
+    "min_ratio_to_haversine": 1.0,
+    "max_ratio_to_haversine": 3.0
+  },
+  "fallback_detour_factor": 1.3,
+  "fallback_speed_kmh": 30,
+  "commission_rate": 0.10,
+  "negotiation": {
+    "tolerance": 0.15,
+    "max_offers": 3,
+    "offer_ttl_minutes": 15,
+    "total_ttl_minutes": 30,
+    "min_step": 10
+  }
+}

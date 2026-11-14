@@ -8,14 +8,48 @@ from __future__ import annotations
  
 import re
 from decimal import Decimal
- 
+  
 from rest_framework import serializers
- 
+  
 from .models import Mission, MissionStatus, TruckType, TruckCategory, TruckSize
 from .services import calculate_price, MAX_WORKERS, TRUCK_SIZE_SURCHARGE
- 
+from .pricing import (
+    MAX_DURATION_MINUTES,
+    MAX_HANDLING_MINUTES,
+    NEW_PRICING_FIELDS,
+    VEHICLE_CLASSES,
+)
+
 # Algerian mobile number pattern: exactly 10 digits starting with 05, 06, or 07.
 _PHONE_RE = re.compile(r"^0[567]\d{8}$")
+
+
+def _has_new_pricing_fields(initial_data) -> bool:
+    """True when the client explicitly opted into the new pricing engine."""
+    return any(
+        initial_data.get(field) is not None for field in NEW_PRICING_FIELDS
+    )
+
+
+def _validate_coordinates(attrs) -> None:
+    """Reject impossible latitude/longitude values with a clear 400."""
+    for field in ("departure_latitude", "arrival_latitude"):
+        value = attrs.get(field)
+        if value is not None and not (
+            Decimal("-90") <= Decimal(value) <= Decimal("90")
+        ):
+            raise serializers.ValidationError(
+                {field: "Latitude must be between -90 and 90."}
+            )
+    for field in ("departure_longitude", "arrival_longitude"):
+        value = attrs.get(field)
+        if value is not None and not (
+            Decimal("-180") <= Decimal(value) <= Decimal("180")
+        ):
+            raise serializers.ValidationError(
+                {field: "Longitude must be between -180 and 180."}
+            )
+
  
  
 # ---------------------------------------------------------------------------
@@ -28,39 +62,77 @@ class PriceEstimateSerializer(serializers.Serializer):
     """
     Validates the client's trip parameters and returns a price estimate.
     No Mission is created at this stage.
- 
+  
     phone_number and shipment_type are deliberately absent — the estimate
     step is purely about calculating a price, not collecting client details.
+
+    New pricing fields (vehicle_class, helpers, floors, handling_minutes,
+    duration_min) are optional. Their presence — or an explicit vehicle
+    class — switches the request to the new pricing engine. Requests without
+    them keep the historical amount and response shape for compatibility.
     """
- 
+  
     truck_type = serializers.ChoiceField(choices=TruckType.choices)
     category = serializers.ChoiceField(choices=TruckCategory.choices)
     capacity = serializers.IntegerField(min_value=1)
     size = serializers.ChoiceField(
         choices=TruckSize.choices,
-        help_text="Truck size — determines the size surcharge applied to the price.",
+        required=False,
+        help_text="Truck size — determines the vehicle class when not given explicitly.",
     )
- 
+  
     departure_latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
     departure_longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
     arrival_latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
     arrival_longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
- 
+  
     distance = serializers.DecimalField(
         max_digits=8,
         decimal_places=2,
         min_value=Decimal("0.01"),
-        help_text="Distance in km.",
+        required=False,
+        help_text="Distance in km. Optional on the new pricing path (haversine fallback).",
     )
     date = serializers.DateField()
     time = serializers.TimeField()
-    workers = serializers.IntegerField(min_value=0, max_value=MAX_WORKERS)
- 
+    workers = serializers.IntegerField(
+        min_value=0, max_value=MAX_WORKERS, required=False, default=0
+    )
+
+    # ── New pricing-engine inputs (all optional) ─────────────────────────────
+    vehicle_class = serializers.ChoiceField(
+        choices=[(name, name.title()) for name in VEHICLE_CLASSES],
+        required=False,
+        help_text="Explicit pricing class: standard, van or truck.",
+    )
+    helpers = serializers.IntegerField(min_value=0, required=False)
+    floors = serializers.IntegerField(min_value=0, required=False)
+    handling_minutes = serializers.IntegerField(
+        min_value=0, max_value=MAX_HANDLING_MINUTES, required=False
+    )
+    duration_min = serializers.IntegerField(
+        min_value=1, max_value=MAX_DURATION_MINUTES, required=False
+    )
+  
     def validate(self, attrs):
-        # Eagerly compute price so the view can return it without extra work.
-        attrs["estimated_price"] = calculate_price(
-            attrs["distance"], attrs["workers"], attrs["size"]
-        )
+        new_flow = _has_new_pricing_fields(self.initial_data)
+
+        if not new_flow:
+            # Legacy path: keep exactly the historical requirements and amount.
+            if attrs.get("distance") is None:
+                raise serializers.ValidationError(
+                    {"distance": "This field is required."}
+                )
+            if not attrs.get("size"):
+                raise serializers.ValidationError(
+                    {"size": "This field is required."}
+                )
+            attrs["estimated_price"] = calculate_price(
+                attrs["distance"], attrs.get("workers", 0), attrs["size"]
+            )
+
+        attrs["pricing_new_flow"] = new_flow
+        _validate_coordinates(attrs)
         return attrs
  
  
@@ -101,23 +173,47 @@ class MissionCreateSerializer(serializers.Serializer):
     capacity = serializers.IntegerField(min_value=1)
     size = serializers.ChoiceField(
         choices=TruckSize.choices,
-        help_text="Truck size — determines the size surcharge applied to the price.",
+        required=False,
+        help_text="Truck size — determines the vehicle class when not given explicitly.",
     )
- 
+  
     departure_latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
     departure_longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
     arrival_latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
     arrival_longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
- 
+  
     distance = serializers.DecimalField(
         max_digits=8,
         decimal_places=2,
         min_value=Decimal("0.01"),
+        required=False,
+        help_text="Required for legacy confirmations; a quote may supply it.",
     )
-    date = serializers.DateField()
-    time = serializers.TimeField()
-    workers = serializers.IntegerField(min_value=0, max_value=MAX_WORKERS)
- 
+    date = serializers.DateField(required=False)
+    time = serializers.TimeField(required=False)
+    workers = serializers.IntegerField(
+        min_value=0, max_value=MAX_WORKERS, required=False, default=0
+    )
+
+    # ── New pricing-engine inputs (all optional) ─────────────────────────────
+    vehicle_class = serializers.ChoiceField(
+        choices=[(name, name.title()) for name in VEHICLE_CLASSES],
+        required=False,
+    )
+    helpers = serializers.IntegerField(min_value=0, required=False)
+    floors = serializers.IntegerField(min_value=0, required=False)
+    handling_minutes = serializers.IntegerField(
+        min_value=0, max_value=MAX_HANDLING_MINUTES, required=False
+    )
+    duration_min = serializers.IntegerField(
+        min_value=1, max_value=MAX_DURATION_MINUTES, required=False
+    )
+    quote_id = serializers.UUIDField(
+        required=False,
+        help_text="Server-issued quote to confirm at the quoted price.",
+    )
+    negotiable = serializers.BooleanField(required=False, default=False)
+  
     def validate_phone_number(self, value: str) -> str:
         """
         Enforce Algerian mobile number format:
@@ -139,8 +235,40 @@ class MissionCreateSerializer(serializers.Serializer):
     def validate_shipment_type(self, value: str) -> str:
         """Normalise to lowercase and strip surrounding whitespace."""
         return value.strip().lower()
- 
- 
+
+    def validate(self, attrs):
+        """
+        Route the confirmation to the legacy or the new pricing path.
+
+        * ``quote_id`` present — the quote supplies distance, schedule and
+          pricing inputs; any conflicting value is rejected later.
+        * new pricing fields present — the price is computed by the engine.
+        * otherwise — the historical formula applies and the legacy month
+          fields stay mandatory.
+        """
+        has_quote = attrs.get("quote_id") is not None
+        new_flow = has_quote or _has_new_pricing_fields(self.initial_data)
+
+        if not has_quote:
+            missing = {}
+            if attrs.get("distance") is None:
+                missing["distance"] = "This field is required."
+            if attrs.get("date") is None:
+                missing["date"] = "This field is required."
+            if attrs.get("time") is None:
+                missing["time"] = "This field is required."
+            if missing:
+                raise serializers.ValidationError(missing)
+            if not new_flow and not attrs.get("size"):
+                raise serializers.ValidationError(
+                    {"size": "This field is required."}
+                )
+
+        attrs["pricing_new_flow"] = new_flow
+        _validate_coordinates(attrs)
+        return attrs
+  
+  
 # ---------------------------------------------------------------------------
 # Mission read serializers — different verbosity per audience.
 # Both phone_number and shipment_type are visible in all responses so that
@@ -191,6 +319,8 @@ class MissionDriverListSerializer(serializers.ModelSerializer):
             "workers",
             # Financials & status
             "price",
+            "driver_net",
+            "commission_rate",
             "status",
             "display_status",
             "is_taken",
@@ -260,6 +390,12 @@ class MissionBossSerializer(serializers.ModelSerializer):
             "workers",
             # Financials & lifecycle
             "price",
+            "negotiable",
+            "pricing_config_version",
+            "commission_rate",
+            "commission_amount",
+            "driver_net",
+            "price_locked_at",
             "status",
             "assigned_employee",
             "created_at",
@@ -308,6 +444,7 @@ class MissionClientSerializer(serializers.ModelSerializer):
             "time",
             "workers",
             "price",
+            "negotiable",
             "status",
             "created_at",
         ]

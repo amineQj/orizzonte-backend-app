@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any
  
 from django.db import transaction
+from django.utils import timezone
  
 from .models import Mission, MissionStatus, TruckSize
  
@@ -75,51 +76,88 @@ def calculate_price(distance: Decimal, workers: int, size: str) -> Decimal:
 # Mission creation (step 2 — confirmed by client)
 # ---------------------------------------------------------------------------
  
-def create_mission(client, validated_data: dict[str, Any]) -> Mission:
+def create_mission(
+    client,
+    validated_data: dict[str, Any],
+    *,
+    price_override: int | None = None,
+    pricing_meta: dict[str, Any] | None = None,
+) -> Mission:
     """
     Persist a new Mission after the client confirms the price.
- 
+
     The price is (re-)calculated server-side so the client cannot tamper
     with it between the estimate step and the confirmation step.
- 
+
+    ``price_override`` and ``pricing_meta`` are only used by the new pricing
+    engine (a server-generated quote or a fresh engine estimate). When they
+    are omitted the legacy behaviour is byte-identical: the historical
+    formula is applied and no pricing snapshot is written.
+
     Args:
         client:         The authenticated User making the request.
         validated_data: Cleaned data from MissionCreateSerializer.
                         Must include shipment_type and phone_number
                         in addition to all trip fields.
- 
+        price_override: Integer DZD amount produced by the pricing engine.
+        pricing_meta:   Optional pricing snapshot (quote, components,
+                        commission, net, lock timestamp).
+
     Returns:
         The newly created Mission instance.
     """
     distance = validated_data["distance"]
-    workers  = validated_data["workers"]
-    size     = validated_data["size"]
-    price    = calculate_price(distance, workers, size)
- 
-    mission = Mission.objects.create(
-        client=client,
+    workers = validated_data.get("workers", 0)
+    size = validated_data["size"]
+
+    if price_override is None:
+        price = calculate_price(distance, workers, size)
+    else:
+        price = Decimal(int(price_override))
+
+    mission_fields: dict[str, Any] = {
+        "client": client,
         # New confirm-only fields
-        shipment_type=validated_data["shipment_type"],
-        phone_number=validated_data["phone_number"],
+        "shipment_type": validated_data["shipment_type"],
+        "phone_number": validated_data["phone_number"],
         # Truck
-        truck_type=validated_data["truck_type"],
-        category=validated_data["category"],
-        capacity=validated_data["capacity"],
-        size=size,
+        "truck_type": validated_data["truck_type"],
+        "category": validated_data["category"],
+        "capacity": validated_data["capacity"],
+        "size": size,
         # Route
-        departure_latitude=validated_data["departure_latitude"],
-        departure_longitude=validated_data["departure_longitude"],
-        arrival_latitude=validated_data["arrival_latitude"],
-        arrival_longitude=validated_data["arrival_longitude"],
-        distance=distance,
+        "departure_latitude": validated_data["departure_latitude"],
+        "departure_longitude": validated_data["departure_longitude"],
+        "arrival_latitude": validated_data["arrival_latitude"],
+        "arrival_longitude": validated_data["arrival_longitude"],
+        "distance": distance,
         # Schedule
-        date=validated_data["date"],
-        time=validated_data["time"],
-        workers=workers,
+        "date": validated_data["date"],
+        "time": validated_data["time"],
+        "workers": workers,
         # Financials
-        price=price,
-        status=MissionStatus.PENDING,
-    )
+        "price": price,
+        # Persist the client's choice on every path (legacy included), not
+        # only when the new pricing metadata happens to carry it.
+        "negotiable": bool(validated_data.get("negotiable", False)),
+        "status": MissionStatus.PENDING,
+    }
+
+    if pricing_meta:
+        allowed = {
+            "quote",
+            "pricing_config_version",
+            "price_components",
+            "commission_rate",
+            "commission_amount",
+            "driver_net",
+            "price_locked_at",
+        }
+        mission_fields.update(
+            {key: value for key, value in pricing_meta.items() if key in allowed}
+        )
+
+    mission = Mission.objects.create(**mission_fields)
     return mission
  
  
@@ -156,13 +194,55 @@ def accept_mission(mission_id: int, employee) -> Mission:
                 f"Mission #{mission_id} has already been accepted by "
                 f"{mission.assigned_employee}."
             )
- 
+
+        now = timezone.now()
+        if mission.held_by_id is not None:
+            if mission.hold_expires_at is None or mission.hold_expires_at <= now:
+                # Stale hold: release it before the direct accept.
+                from .negotiation_services import close_open_negotiations
+
+                close_open_negotiations(
+                    mission,
+                    reason="hold_expired",
+                    actor=employee,
+                    now=now,
+                    clear_hold=True,
+                )
+            elif mission.held_by_id != employee.pk:
+                raise MissionHeldError(mission.hold_expires_at)
+
         mission.status = MissionStatus.ACCEPTED
         mission.assigned_employee = employee
-        mission.save(update_fields=["status", "assigned_employee", "updated_at"])
+        mission.held_by = None
+        mission.hold_expires_at = None
+        mission.save(
+            update_fields=[
+                "status",
+                "assigned_employee",
+                "held_by",
+                "hold_expires_at",
+                "updated_at",
+            ]
+        )
+
+        # A direct accept bypasses the negotiation price: close the open
+        # negotiation instead of treating it as accepted.
+        from .negotiation_services import close_open_negotiations
+
+        close_open_negotiations(
+            mission,
+            reason="direct_accept",
+            actor=employee,
+            now=now,
+            clear_hold=False,
+        )
  
     return mission
-def assign_mission(mission_id: int, employee_id: int) -> Mission:
+
+
+def assign_mission(
+    mission_id: int, employee_id: int, *, close_negotiations: bool = True
+) -> Mission:
     """
     Boss-only action: assign a specific employee to a mission.
     Transitions PENDING → ACCEPTED.
@@ -206,9 +286,22 @@ def assign_mission(mission_id: int, employee_id: int) -> Mission:
         mission.assigned_employee = employee
         mission.save(update_fields=["status", "assigned_employee", "updated_at"])
 
+        # The boss may assign over an active negotiation hold. Doing so closes
+        # the negotiation and releases the hold.
+        if close_negotiations:
+            from .negotiation_services import close_open_negotiations
+
+            close_open_negotiations(
+                mission,
+                reason="boss_assign",
+                actor=None,
+                now=timezone.now(),
+                clear_hold=True,
+            )
+ 
     return mission
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Mission progression (employee actions — concurrency-safe)
 # ---------------------------------------------------------------------------
@@ -426,9 +519,20 @@ def cancel_mission(mission_id: int) -> Mission:
         if mission.status == MissionStatus.COMPLETED:
             raise MissionInvalidTransitionError("Cannot cancel a completed mission.")
 
+        now = timezone.now()
         mission.status = MissionStatus.CANCELLED
         mission.save(update_fields=["status", "updated_at"])
 
+        from .negotiation_services import close_open_negotiations
+
+        close_open_negotiations(
+            mission,
+            reason="mission_cancelled",
+            actor=None,
+            now=now,
+            clear_hold=True,
+        )
+ 
     return mission
 
 
@@ -473,3 +577,17 @@ class DriverNotApprovedError(Exception):
     def __init__(self, profile_status: str):
         self.profile_status = profile_status
         super().__init__("The selected driver is not approved yet.")
+
+
+class MissionHeldError(Exception):
+    """Raised when a driver direct-accepts a mission held by another driver.
+
+    Carries ``hold_expires_at`` so the API can return the stable code
+    ``mission_held`` and the hold deadline without leaking personal data.
+    """
+
+    def __init__(self, hold_expires_at):
+        self.hold_expires_at = hold_expires_at
+        super().__init__(
+            "Another driver is currently negotiating this mission."
+        )

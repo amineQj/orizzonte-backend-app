@@ -665,3 +665,184 @@ POST /api/drivers/26/reject/
 | `documents_version_conflict` | agent review (409) | Documents modifiés depuis l'analyse |
 | *(aucun champ `code`)* | endpoints agent (401) | Clé absente/incorrecte ou agent désactivé : le corps contient uniquement `detail` |
 
+---
+
+## 13. Estimation de prix et negociation (Phase 4)
+
+Prefixe : `/api/`. Toutes ces routes exigent `Authorization: Bearer <access_token>`.
+
+### 13.1 Estimation - `POST /api/missions/estimate/`
+
+Le client envoie les parametres du trajet ; le serveur calcule le prix.
+Aucune mission n'est creee a cette etape.
+
+- **Role** : `client`.
+- **Body (chemin historique)** - inchange depuis les phases precedentes :
+  ```json
+  {
+    "truck_type": "large", "category": "closed", "capacity": 5,
+    "size": "medium",
+    "departure_latitude": "36.737232", "departure_longitude": "3.086472",
+    "arrival_latitude": "36.365000", "arrival_longitude": "6.614000",
+    "distance": "300.00", "date": "2024-08-01", "time": "09:00", "workers": 2
+  }
+  ```
+- **Body (nouveau moteur)** - opt-in via les nouveaux champs :
+  ```json
+  {
+    "truck_type": "large", "category": "closed", "capacity": 5,
+    "departure_latitude": "36.7538", "departure_longitude": "3.0588",
+    "arrival_latitude": "36.7538", "arrival_longitude": "3.1750",
+    "date": "2026-11-16", "time": "10:00",
+    "vehicle_class": "standard", "helpers": 0, "floors": 0, "duration_min": 20
+  }
+  ```
+- **`200 OK`** (chemin historique) : `estimated_price` = 67500, `breakdown` identique
+  a la formule historique, plus un champ additif `estimate` (montant moteur, `low`,
+  `high`, `confidence`, `calibrated: false`, `quote_id: null`).
+- **`200 OK`** (nouveau moteur) : `estimated_price` = montant moteur (ex. `850`),
+  `estimate.quote_id` non null (quote persiste, TTL 30 min), `confidence` in
+  {`normal`, `low`}.
+- **`400`** : `invalid_distance`, `invalid_helpers`, `invalid_floors`,
+  `invalid_handling_minutes`, `invalid_vehicle_class`, `invalid_coordinates`,
+  `invalid_duration`.
+
+> La reponse historique (`estimated_price` + `breakdown`) est byte-identique pour
+> les anciens clients ; le champ `estimate` est purement additif.
+
+### 13.2 Confirmation - `POST /api/missions/confirm/`
+
+- **Role** : `client`.
+- **Chemin historique** : body identique a l'estimation + `shipment_type`,
+  `phone_number`. -> `201 Created` avec `MissionClientSerializer` ; `price` =
+  formule historique, aucun snapshot de pricing.
+- **Chemin nouveau moteur sans quote** : body avec `vehicle_class`/`helpers`/... ->
+  le prix est recalcule cote serveur et le snapshot est stocke.
+- **Chemin avec quote** : body minimal avec `quote_id` (UUID). Le quote fournit
+  distance, date, heure, helpers, duree ; tout champ fourni doit correspondre
+  exactement sinon `400` `quote_mismatch`. La route est re-validee (bornes de
+  distance). Quote consomme (single-use).
+- **`400`/`404`** : `quote_not_found` (404 si non proprietaire), `quote_expired`,
+  `quote_already_used`, `quote_mismatch`, `invalid_distance`, etc.
+- **`negotiable`** (bool, defaut `false`) : active la negociation sur la mission.
+
+### 13.3 Regles publiques - `GET /api/pricing/rules/`
+
+- **Role** : tout utilisateur authentifie.
+- **`200 OK`** : tarif public (classes de vehicules, extras, multiplicateurs,
+  bornes de distance, `negotiation` avec `tolerance`/`max_offers`/`min_step`/
+  `offer_ttl_minutes`/`total_ttl_minutes`, `quote_ttl_minutes`).
+- La **commission rate n'est jamais exposee** ici.
+
+### 13.4 Negotiation
+
+La negociation s'ouvre lorsqu'un **chauffeur approuve** fait la **premiere offre**
+sur une mission `negotiable=true` et `pending`. La mission est alors **retenue**
+(`held_by`, `hold_expires_at`) pendant 15 min (TTL de l'offre).
+
+Roles : `client` (proprietaire de la mission) <-> `chauffeur` (celui qui a fait
+la premiere offre). Non-participants -> `404`. Roles non autorises -> `403`.
+
+#### 13.4.1 Lire la negociation - `GET /api/missions/<id>/negotiation/`
+
+- **`200 OK`** : objet `Negotiation` avec `id`, `mission_id`, `status`,
+  `currency`, `initial_price`, `current_amount`, `min_amount`, `max_amount`,
+  `min_fare`, `max_offers`, `min_step`, `offer_count`, `is_final`, `your_turn`,
+  `offers` (liste), `calibrated`, `config_version`, `expires_at`,
+  `hold_expires_at`, `accepted_amount`, `commission_rate` (chauffeur uniquement),
+  `commission_amount` (chauffeur uniquement), `driver_net` (chauffeur uniquement),
+  `created_at`, `accepted_at`, `closed_at`.
+- Le **client** ne recoit pas `commission_rate`, `commission_amount`, `driver_net`.
+- **`404`** : `negotiation_not_found`.
+
+#### 13.4.2 Faire une offre - `POST /api/missions/<id>/negotiation/offer/`
+
+- **Body** :
+  ```json
+  { "amount": 900, "idempotency_key": "<cle opaque unique>" }
+  ```
+- **Premiere offre** (chauffeur approuve, mission disponible) -> ouvre la
+  negociation, retient la mission, `201 Created`.
+- **Contre-offre** -> `200 OK` si idempotent, sinon `201 Created`.
+- **Regles** (dans l'ordre) : negociation fermee/expiree -> participant ->
+  tour -> idempotence -> max offres (3) -> entier -> multiple de `min_step` ->
+  `[0.85*E, 1.15*E]` -> `>= min_fare` -> monotone (client baisse, chauffeur
+  monte) avec ecart `>= min_step`.
+- **`400`** : `offer_not_aligned`, `offer_out_of_range`, `offer_below_min_fare`,
+  `offer_not_monotonic`, `invalid_offer_amount`, `invalid_idempotency_key`.
+- **`403`** : `not_your_turn`, `driver_not_approved`.
+- **`409`** : `negotiation_closed`, `negotiation_expired`, `max_offers_reached`,
+  `idempotency_conflict`, `mission_not_negotiable`, `mission_held`,
+  `negotiation_already_open`.
+- **Idempotence** : meme cle + meme montant -> `200` avec le resultat stocke ;
+  meme cle + montant different -> `409` `idempotency_conflict`.
+
+#### 13.4.3 Accepter - `POST /api/missions/<id>/negotiation/accept/`
+
+- **Role** : participant (celui qui n'a **pas** fait la derniere offre).
+- **`200 OK`** : `{ "negotiation": {...}, "mission": {...} }`. Le client recoit
+  `MissionClientSerializer` (pas de `driver_net`/`commission_*`), le chauffeur
+  recoit `MissionDriverListSerializer` (avec `driver_net` et `commission_rate`).
+- Le prix est verrouille (`price_locked_at`), le chauffeur est assigne, la
+  commission (10 %) et le net chauffeur sont copies de la negociation.
+- **`403`** : `not_your_turn`.
+- **`409`** : `negotiation_expired`, `driver_not_approved`, `mission_not_negotiable`.
+
+#### 13.4.4 Refuser - `POST /api/missions/<id>/negotiation/decline/`
+
+- **Role** : participant (celui qui n'a **pas** fait la derniere offre).
+- Ferme la negociation (`status = "declined"`), libere la mission (hold leve),
+  la mission reste `pending` pour un autre chauffeur.
+- **`200 OK`** : negociation mise a jour.
+- **`403`** : `not_your_turn`.
+- **`409`** : `negotiation_closed`, `negotiation_expired`.
+
+#### 13.4.5 Expiration
+
+- TTL total de la negociation : `total_ttl_minutes` (30 par defaut).
+- TTL par offre : `offer_ttl_minutes` (15 par defaut) ; chaque offre repousse
+  le deadline, borne par le TTL total.
+- Expiration **paresseuse** : verifiee a chaque appel d'endpoint.
+- Commande manuelle : `python manage.py expire_pricing [--dry-run] [--now ISO]`.
+
+### 13.5 Codes d'erreur stables (Phase 4)
+
+| `code` | HTTP | Ou | Sens |
+|---|---|---|---|
+| `mission_not_negotiable` | 409 | offer/open/accept | Mission non negociable |
+| `mission_held` | 409 | offer/open/accept | Mission retenue par un autre chauffeur |
+| `negotiation_already_open` | 409 | offer (ouverture) | Negociation deja ouverte sur cette mission |
+| `negotiation_not_found` | 404 | GET/offer/accept/decline | Pas de negociation ou non participant |
+| `not_your_turn` | 403 | offer/accept/decline | Ce n'est pas le tour de l'appelant |
+| `max_offers_reached` | 409 | offer | 3 offres deja faites (derniere finale) |
+| `offer_not_aligned` | 400 | offer | Montant pas multiple de `min_step` |
+| `offer_out_of_range` | 400 | offer | Montant hors `[0.85*E, 1.15*E]` |
+| `offer_below_min_fare` | 400 | offer | Montant sous le tarif minimum |
+| `offer_not_monotonic` | 400 | offer | Sens ou ecart insuffisant vs l'offre precedente |
+| `invalid_offer_amount` | 400 | offer | Montant non entier / non positif |
+| `invalid_idempotency_key` | 400 | offer | Cle manquante ou trop longue |
+| `idempotency_conflict` | 409 | offer | Meme cle, montant different |
+| `negotiation_closed` | 409 | offer/accept/decline | Negociation fermee (acceptee/declinee) |
+| `negotiation_expired` | 409 | offer/accept/decline | TTL ecoule |
+| `driver_not_approved` | 403/409 | offer/open/accept | Profil chauffeur non approuve |
+
+### 13.6 Commandes disponibles
+
+```bash
+# Seed / refresh the placeholder pricing configuration
+python manage.py seed_pricing [--config-version N] [--activate] [--force] [--json path]
+
+# Expire stale negotiations and release orphan holds
+python manage.py expire_pricing [--dry-run] [--now ISO-8601]
+
+# Create a boss account (server-side only)
+python manage.py create_boss --email <email>
+```
+
+> Les valeurs tarifaires sont des **placeholders** (`calibrated: false`). Voir
+> `PRICING_CALIBRATION.md` pour la procedure de calibration avec de vrais devis.
+'''
+with open('API_DOCS.md', 'a', encoding='utf-8') as f:
+    f.write(content)
+print('appended', len(content), 'chars')
+"

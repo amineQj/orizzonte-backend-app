@@ -23,12 +23,20 @@ Boss:
 from __future__ import annotations
  
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
- 
+  
 from .models import Mission, MissionStatus
 from .permissions import IsBoss, IsClient, IsDriver
 from drivers.permissions import IsApprovedDriver
+from .pricing import PricingError, legacy_size_for_vehicle_class
+from .pricing_services import (
+    build_estimate,
+    create_mission_from_request,
+    get_active_config,
+    public_rules,
+)
 from .serializers import (
     BossDashboardSerializer,
     MissionBossSerializer,
@@ -41,19 +49,36 @@ from .services import (
     DriverAlreadyBusyError,
     DriverNotApprovedError,
     MissionAlreadyAcceptedError,
+    MissionHeldError,
     MissionInvalidTransitionError,
     MissionNotAssignedToYouError,
     accept_mission,
     assign_mission,
     cancel_mission,
     complete_mission,
-    create_mission,
     delete_mission,
     get_boss_dashboard_stats,
     start_mission,
     TRUCK_SIZE_SURCHARGE,
 )
- 
+  
+
+def _pricing_error_response(exc: PricingError) -> Response:
+    """Map a pricing failure to a stable error body.
+
+    Participant-only failures (a quote that does not belong to the caller)
+    return 404 so the endpoint never leaks another client's quote.
+    """
+    body = {"detail": exc.message, "code": exc.code}
+    if exc.field:
+        body["field"] = exc.field
+    http_status = (
+        status.HTTP_404_NOT_FOUND
+        if exc.code == "quote_not_found"
+        else status.HTTP_400_BAD_REQUEST
+    )
+    return Response(body, status=http_status)
+
  
 # ---------------------------------------------------------------------------
 # Client endpoints
@@ -74,48 +99,101 @@ class PriceEstimateView(APIView):
     def post(self, request):
         serializer = PriceEstimateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
- 
+        data = serializer.validated_data
+        new_flow = data["pricing_new_flow"]
+
+        try:
+            estimate, _quote, _resolved = build_estimate(
+                data,
+                client=request.user,
+                persist_quote=new_flow,
+                enforce_bounds=new_flow,
+            )
+        except PricingError as exc:
+            return _pricing_error_response(exc)
+
+        if new_flow:
+            components = estimate["components"]
+            estimated_price = estimate["amount"]
+            breakdown = {
+                "distance_km": components["distance_km"],
+                "workers": components["helpers_count"],
+                "size": data.get("size")
+                or legacy_size_for_vehicle_class(components["vehicle_class"]),
+                "price_per_km": components["per_km"],
+                "fixed_fuel_cost": components["base_rate"],
+                "price_per_worker": components["helper_hourly"],
+                "size_surcharge": 0,
+            }
+        else:
+            # Historical response, byte-identical for old clients.
+            estimated_price = data["estimated_price"]
+            breakdown = {
+                "distance_km": data["distance"],
+                "workers": data["workers"],
+                "size": data["size"],
+                "price_per_km": 200,
+                "fixed_fuel_cost": 2000,
+                "price_per_worker": 1500,
+                "size_surcharge": TRUCK_SIZE_SURCHARGE[data["size"]],
+            }
+
         return Response(
             {
-                "estimated_price": serializer.validated_data["estimated_price"],
-                "breakdown": {
-                    "distance_km": serializer.validated_data["distance"],
-                    "workers": serializer.validated_data["workers"],
-                    "size": serializer.validated_data["size"],
-                    "price_per_km": 200,
-                    "fixed_fuel_cost": 2000,
-                    "price_per_worker": 1500,
-                    "size_surcharge": TRUCK_SIZE_SURCHARGE[serializer.validated_data["size"]],
-                },
+                "estimated_price": estimated_price,
+                "breakdown": breakdown,
+                "estimate": estimate,
             },
             status=status.HTTP_200_OK,
         )
- 
- 
+  
+  
 class MissionConfirmView(APIView):
     """
     POST /missions/confirm/
- 
+  
     Client confirms the price and creates the mission.
     Price is always recalculated server-side.
- 
+  
     Permissions: client only.
     """
- 
+  
     permission_classes = [IsClient]
- 
+  
     def post(self, request):
         serializer = MissionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
- 
-        mission = create_mission(
-            client=request.user,
-            validated_data=serializer.validated_data,
-        )
- 
+
+        try:
+            mission = create_mission_from_request(
+                client=request.user,
+                data=serializer.validated_data,
+            )
+        except PricingError as exc:
+            return _pricing_error_response(exc)
+
         return Response(
             MissionClientSerializer(mission).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class PricingRulesView(APIView):
+    """
+    GET /pricing/rules/
+
+    Authenticated read of the public tariff and negotiation rules.
+    The commission rate is deliberately excluded.
+
+    Permissions: any authenticated user.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            public_rules(get_active_config()),
+            status=status.HTTP_200_OK,
         )
  
  
@@ -195,13 +273,26 @@ class AcceptMissionView(APIView):
                 {"detail": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
- 
+        except MissionHeldError as exc:
+            return Response(
+                {
+                    "detail": str(exc),
+                    "code": "mission_held",
+                    "hold_expires_at": (
+                        exc.hold_expires_at.isoformat()
+                        if exc.hold_expires_at is not None
+                        else None
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+  
         return Response(
             MissionDriverListSerializer(mission).data,
             status=status.HTTP_200_OK,
         )
- 
- 
+  
+  
 class StartMissionView(APIView):
     """
     POST /missions/<pk>/start/

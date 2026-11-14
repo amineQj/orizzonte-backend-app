@@ -19,7 +19,13 @@ Which gives you:
     GET    /api/missions/dashboard/
 """
 from django.urls import path
- 
+
+from .negotiation_views import (
+    MissionNegotiationView,
+    NegotiationAcceptView,
+    NegotiationDeclineView,
+    NegotiationOfferView,
+)
 from .views import (
     AcceptMissionView,
     AllMissionsView,
@@ -29,6 +35,7 @@ from .views import (
     CompleteMissionView,
     MissionConfirmView,
     PriceEstimateView,
+    PricingRulesView,
     StartMissionView,
     DriverMissionHistoryView,
     AdminDriverHistoryView,
@@ -39,6 +46,9 @@ from .views import (
 app_name = "missions"
  
 urlpatterns = [
+    # ── Pricing ──────────────────────────────────────────────────────────────
+    path("pricing/rules/", PricingRulesView.as_view(), name="pricing-rules"),
+
     # ── Client ──────────────────────────────────────────────────────────────
     path("missions/estimate/", PriceEstimateView.as_view(), name="mission-estimate"),
     path("missions/confirm/", MissionConfirmView.as_view(), name="mission-confirm"),
@@ -49,7 +59,29 @@ urlpatterns = [
     path("missions/<int:pk>/accept/", AcceptMissionView.as_view(), name="mission-accept"),
     path("missions/<int:pk>/start/", StartMissionView.as_view(), name="mission-start"),
     path("missions/<int:pk>/complete/", CompleteMissionView.as_view(), name="mission-complete"),
- 
+
+    # ── Negotiation (client + approved driver) ───────────────────────────────
+    path(
+        "missions/<int:pk>/negotiation/",
+        MissionNegotiationView.as_view(),
+        name="mission-negotiation",
+    ),
+    path(
+        "missions/<int:pk>/negotiation/offer/",
+        NegotiationOfferView.as_view(),
+        name="mission-negotiation-offer",
+    ),
+    path(
+        "missions/<int:pk>/negotiation/accept/",
+        NegotiationAcceptView.as_view(),
+        name="mission-negotiation-accept",
+    ),
+    path(
+        "missions/<int:pk>/negotiation/decline/",
+        NegotiationDeclineView.as_view(),
+        name="mission-negotiation-decline",
+    ),
+
     # ── Boss ─────────────────────────────────────────────────────────────────
     path("missions/all/", AllMissionsView.as_view(), name="mission-all"),
     path("missions/<int:pk>/assign/", AssignMissionView.as_view(), name="mission-assign"),
