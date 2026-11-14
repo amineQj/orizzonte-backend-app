@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -42,12 +44,14 @@ QUALITY_GATE_USABLE = frozenset({STATUS_ACCEPTABLE, STATUS_POOR})
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 OCR_TIMEOUT_SECONDS = 20
 TESSERACT_LANGUAGE = "fra+ara"
-DEFAULT_EASYOCR_PYTHON_PATH = r"C:\orizzonte_easyocr_env\Scripts\python.exe"
-EASYOCR_RUNNER_PATH = Path(__file__).resolve().parents[2] / "easyocr_runner.py"
+EASYOCR_SERVER_URL = os.environ.get(
+    "EASYOCR_SERVER_URL", "http://127.0.0.1:8001"
+).rstrip("/")
 EASYOCR_SLOTS = frozenset({"id_card_front", "id_card_back", "driving_license"})
-EASYOCR_TIMEOUT_SECONDS = 120
+EASYOCR_TIMEOUT_SECONDS = 30
 EASYOCR_TEMP_PREFIX = "orizzonte_easyocr_"
 EASYOCR_STALE_TEMP_SECONDS = 3600
+EASYOCR_DIAG_PREFIX = "EASYOCR_DIAG"
 
 
 class BridgeError(Exception):
@@ -121,17 +125,26 @@ def _tesseract_available() -> bool:
     return _tesseract_binary() is not None
 
 
-def _easyocr_python() -> str:
-    configured = os.environ.get("EASYOCR_PYTHON_PATH", "").strip()
-    return configured or DEFAULT_EASYOCR_PYTHON_PATH
+def _easyocr_server_url() -> str:
+    configured = os.environ.get("EASYOCR_SERVER_URL", "").strip()
+    return (configured or EASYOCR_SERVER_URL).rstrip("/")
 
 
 def _easyocr_available() -> bool:
-    return Path(_easyocr_python()).is_file() and EASYOCR_RUNNER_PATH.is_file()
+    """Check whether the persistent EasyOCR server is reachable."""
+
+    try:
+        with urllib.request.urlopen(
+            _easyocr_server_url() + "/health",
+            timeout=2,
+        ) as response:
+            return getattr(response, "status", 200) == 200
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
 
 
 def _cleanup_stale_easyocr_temp_dirs() -> None:
-    """Remove temp directories left behind if an earlier process was killed."""
+    """Remove temp directories left behind by older subprocess-based runs."""
 
     root = Path(tempfile.gettempdir())
     now = time.time()
@@ -146,52 +159,146 @@ def _cleanup_stale_easyocr_temp_dirs() -> None:
             continue
 
 
-def _run_easyocr(image_bytes: bytes) -> tuple[str | None, str]:
-    """Run EasyOCR in its isolated environment through a subprocess.
+def _easyocr_diag(message: str, *args: object) -> None:
+    """Write privacy-safe EasyOCR diagnostics to stderr.
 
-    The image is written to a short-lived temporary file because EasyOCR reads
-    from a path.  Neither the path nor the recognized text is logged.
+    EasyOCR text itself is never logged.  Only response shape, byte counts,
+    status codes, and exception details are emitted.  The prefix lets the
+    Django bridge forward these lines without exposing unrelated stderr noise.
     """
 
-    _cleanup_stale_easyocr_temp_dirs()
+    rendered = message % args if args else message
+    print(f"{EASYOCR_DIAG_PREFIX} {rendered}", file=sys.stderr, flush=True)
+
+
+def _coerce_easyocr_text(value: Any) -> str:
+    """Accept a string or a list of EasyOCR lines/results."""
+
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, list):
+        return ""
+
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            candidate = item
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            candidate = item[1] if isinstance(item[1], str) else ""
+        elif isinstance(item, dict):
+            candidate = item.get("text") if isinstance(item.get("text"), str) else ""
+        else:
+            candidate = ""
+        if candidate.strip():
+            parts.append(candidate.strip())
+    return "\n".join(parts).strip()
+
+
+def _extract_easyocr_text(payload: dict[str, Any]) -> str:
+    for key in ("text", "lines", "results"):
+        text = _coerce_easyocr_text(payload.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _easyocr_http_request(image_bytes: bytes) -> dict[str, Any]:
+    """Send one image to the persistent EasyOCR server."""
+
+    request = urllib.request.Request(
+        _easyocr_server_url() + "/ocr",
+        data=image_bytes,
+        headers={"Content-Type": "application/octet-stream"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=EASYOCR_TIMEOUT_SECONDS,
+        ) as response:
+            status_code = getattr(response, "status", None)
+            if status_code is None:
+                status_code = response.getcode()
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        _easyocr_diag(
+            "http_error status=%s reason=%s",
+            exc.code,
+            exc.reason,
+        )
+        raise
+    except Exception as exc:
+        _easyocr_diag(
+            "request_exception type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    _easyocr_diag(
+        "http_status=%s raw_bytes=%d",
+        status_code,
+        len(raw),
+    )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _easyocr_diag(
+            "json_error type=%s raw_bytes=%d",
+            type(exc).__name__,
+            len(raw),
+        )
+        raise
+    if not isinstance(payload, dict):
+        _easyocr_diag("json_type=%s", type(payload).__name__)
+        raise ValueError("invalid EasyOCR response")
+
+    text = _extract_easyocr_text(payload)
+    _easyocr_diag(
+        "json_keys=%s has_text=%s text_length=%d",
+        sorted(str(key) for key in payload),
+        "text" in payload,
+        len(text),
+    )
+    return payload
+
+
+def _run_easyocr(image_bytes: bytes) -> tuple[str | None, str]:
+    """Run EasyOCR through the persistent HTTP server.
+
+    The server keeps the model warm, so this avoids the previous subprocess
+    cold start.  Tesseract remains the fallback only when EasyOCR returns an
+    error or produces no text at all.
+    """
+
     if not _easyocr_available():
+        _easyocr_diag("server_unavailable url=%s", _easyocr_server_url())
         return None, "UNAVAILABLE"
 
     try:
-        with tempfile.TemporaryDirectory(prefix=EASYOCR_TEMP_PREFIX) as temp_dir:
-            image_path = Path(temp_dir) / "input.png"
-            image_path.write_bytes(image_bytes)
-            completed = subprocess.run(
-                [
-                    _easyocr_python(),
-                    str(EASYOCR_RUNNER_PATH),
-                    str(image_path),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=EASYOCR_TIMEOUT_SECONDS,
-                check=False,
-            )
-    except (OSError, subprocess.TimeoutExpired):
+        payload = _easyocr_http_request(image_bytes)
+    except Exception as exc:
+        _easyocr_diag(
+            "request_failed type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
         return None, "FAILED"
 
-    if completed.returncode != 0:
-        return None, "FAILED"
-
-    try:
-        payload = json.loads(completed.stdout.decode("utf-8", errors="replace"))
-    except (UnicodeDecodeError, ValueError):
-        return None, "FAILED"
-    if not isinstance(payload, dict):
-        return None, "FAILED"
+    text = _extract_easyocr_text(payload)
+    if text:
+        _easyocr_diag("text_found chars=%d", len(text))
+        return text, "USED"
 
     status = payload.get("status")
-    text = payload.get("text")
-    if status == "USED" and isinstance(text, str) and text.strip():
-        return text.strip(), "USED"
-    if status == "EMPTY":
-        return None, "EMPTY"
-    return None, "FAILED"
+    _easyocr_diag(
+        "no_text status=%s text_type=%s",
+        status,
+        type(payload.get("text")).__name__,
+    )
+    if status == "FAILED":
+        return None, "FAILED"
+    return None, "EMPTY"
 
 
 def _run_tesseract(image_bytes: bytes) -> tuple[str | None, str]:
@@ -320,8 +427,6 @@ def _classify(
             None,
         )
 
-    easyocr_classification: ClassificationResult | None = None
-    easyocr_text: str | None = None
     easyocr_status = "UNAVAILABLE"
 
     if slot in EASYOCR_SLOTS:
@@ -333,20 +438,21 @@ def _classify(
                 ocr_text=easyocr_text,
                 config=config,
             )
-            if easyocr_classification.detected_type is not None:
-                return (
-                    easyocr_classification.to_dict(),
-                    _ocr_metadata(
-                        used=True,
-                        available=True,
-                        source="easyocr",
-                        reason="OCR_USED",
-                    ),
-                    easyocr_text,
-                )
+            # EasyOCR produced text, so never fall back to Tesseract.  If no
+            # document keyword matched, the classification is NEEDS_REVIEW and
+            # the caller receives the EasyOCR text for manual review.
+            return (
+                easyocr_classification.to_dict(),
+                _ocr_metadata(
+                    used=True,
+                    available=True,
+                    source="easyocr",
+                    reason="OCR_USED",
+                ),
+                easyocr_text,
+            )
 
     text, ocr_status = _run_tesseract(image_bytes)
-    tesseract_classification: ClassificationResult | None = None
     if ocr_status == "USED" and text is not None:
         tesseract_classification = classify_after_quality(
             quality,
@@ -354,31 +460,6 @@ def _classify(
             ocr_text=text,
             config=config,
         )
-        if tesseract_classification.detected_type is not None:
-            return (
-                tesseract_classification.to_dict(),
-                _ocr_metadata(
-                    used=True,
-                    available=True,
-                    source="tesseract",
-                    reason="OCR_USED",
-                ),
-                text,
-            )
-
-    if easyocr_classification is not None:
-        return (
-            easyocr_classification.to_dict(),
-            _ocr_metadata(
-                used=True,
-                available=True,
-                source="easyocr",
-                reason="OCR_USED",
-            ),
-            easyocr_text,
-        )
-
-    if tesseract_classification is not None:
         return (
             tesseract_classification.to_dict(),
             _ocr_metadata(

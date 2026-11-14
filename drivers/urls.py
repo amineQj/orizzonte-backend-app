@@ -28,7 +28,7 @@ AI agent (X-Agent-Key):
 """
 from django.urls import path
 
-from .verification_views import VerificationCheckView
+from .verification_views import VerificationCheckView, VerificationStatusView
 from .views import (
     AgentDriverDetailView,
     AgentDriverDocumentView,
@@ -50,6 +50,7 @@ urlpatterns = [
     path("drivers/me/documents/", DriverDocumentUploadView.as_view(), name="driver-document-upload"),
     path("drivers/me/submit/", DriverSubmitView.as_view(), name="driver-submit"),
     path("verification/check/", VerificationCheckView.as_view(), name="verification-check"),
+    path("verification/status/<str:task_id>/", VerificationStatusView.as_view(), name="verification-status"),
 
     # ── Boss ────────────────────────────────────────────────────────────
     path("drivers/pending/", PendingDriversView.as_view(), name="driver-pending"),

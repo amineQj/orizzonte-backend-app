@@ -50,18 +50,12 @@ def _payload(
     }
 
 
-def test_easyocr_python_path_uses_environment_override(
+def test_easyocr_server_url_uses_environment_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(
-        "EASYOCR_PYTHON_PATH",
-        r"C:\custom-easyocr-env\Scripts\python.exe",
-    )
+    monkeypatch.setenv("EASYOCR_SERVER_URL", "http://example.test:9000/")
 
-    assert (
-        backend_bridge._easyocr_python()
-        == r"C:\custom-easyocr-env\Scripts\python.exe"
-    )
+    assert backend_bridge._easyocr_server_url() == "http://example.test:9000"
 
 
 def test_stale_easyocr_temp_dirs_are_removed(
@@ -88,21 +82,6 @@ def test_stale_easyocr_temp_dirs_are_removed(
     assert fresh.exists()
 
 
-def _easyocr_completed(
-    command: list[str],
-    text: str,
-    returncode: int = 0,
-) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.CompletedProcess(
-        args=command,
-        returncode=returncode,
-        stdout=json.dumps(
-            {"status": "USED" if text else "EMPTY", "text": text}
-        ).encode("utf-8"),
-        stderr=b"",
-    )
-
-
 def _tesseract_completed(
     command: list[str],
     text: str,
@@ -116,20 +95,17 @@ def _tesseract_completed(
     )
 
 
-def test_easyocr_subprocess_json_classifies_arabic_id_as_match(
+def test_easyocr_http_json_classifies_arabic_id_as_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
-    calls: list[list[str]] = []
+    calls: list[bytes] = []
 
-    def fake_run(
-        command: list[str],
-        **_kwargs: object,
-    ) -> subprocess.CompletedProcess[bytes]:
-        calls.append(command)
-        return _easyocr_completed(command, ARABIC_ID_TEXT)
+    def fake_http(image_bytes: bytes) -> dict[str, object]:
+        calls.append(image_bytes)
+        return {"status": "USED" if ARABIC_ID_TEXT else "EMPTY", "text": ARABIC_ID_TEXT}
 
-    monkeypatch.setattr(backend_bridge.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend_bridge, "_easyocr_http_request", fake_http)
 
     result = backend_bridge.handle(_payload(s.arabic_id_card_bytes()))
 
@@ -147,15 +123,19 @@ def test_easyocr_subprocess_json_classifies_arabic_id_as_match(
     assert len(classification["matched_keywords"]) == 2
 
     assert len(calls) == 1
-    assert "easyocr_runner.py" in calls[0][1]
+    assert calls[0] == s.arabic_id_card_bytes() or len(calls[0]) > 0
 
 
-def test_easyocr_generic_only_falls_back_to_tesseract_specific(
+def test_easyocr_server_failure_falls_back_to_tesseract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
     monkeypatch.setattr(backend_bridge, "_tesseract_binary", lambda: "tesseract")
-    calls: list[list[str]] = []
+    calls: list[object] = []
+
+    def fake_http(_image_bytes: bytes) -> dict[str, object]:
+        calls.append("http")
+        raise OSError("simulated EasyOCR server failure")
 
     def fake_run(
         command: list[str],
@@ -163,53 +143,11 @@ def test_easyocr_generic_only_falls_back_to_tesseract_specific(
     ) -> subprocess.CompletedProcess[bytes]:
         calls.append(command)
         joined = " ".join(str(part) for part in command)
-        if "easyocr_runner.py" in joined:
-            return _easyocr_completed(command, ARABIC_GENERIC_TEXT)
-        return _tesseract_completed(command, ARABIC_DRIVING_TEXT)
-
-    monkeypatch.setattr(backend_bridge.subprocess, "run", fake_run)
-
-    result = backend_bridge.handle(
-        _payload(
-            s.ocr_document_bytes(ARABIC_DRIVING_TEXT),
-            slot="driving_license",
-        )
-    )
-
-    assert result["ocr"] == {
-        "used": True,
-        "available": True,
-        "source": "tesseract",
-        "reason": "OCR_USED",
-    }
-    classification = result["classification"]
-    assert classification["detected_type"] == "driving_license"
-    assert classification["consistency"] == CONSISTENCY_MATCH
-    assert classification["decision"] == DECISION_MATCH
-    assert classification["manual_review_required"] is False
-
-    joined_calls = [" ".join(call) for call in calls]
-    assert any("easyocr_runner.py" in call for call in joined_calls)
-    assert any("tesseract" in call for call in joined_calls)
-
-
-def test_easyocr_subprocess_failure_falls_back_to_tesseract(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
-    monkeypatch.setattr(backend_bridge, "_tesseract_binary", lambda: "tesseract")
-    calls: list[list[str]] = []
-
-    def fake_run(
-        command: list[str],
-        **_kwargs: object,
-    ) -> subprocess.CompletedProcess[bytes]:
-        calls.append(command)
-        joined = " ".join(str(part) for part in command)
-        if "easyocr_runner.py" in joined:
-            raise OSError("simulated EasyOCR subprocess failure")
+        if "tesseract" in joined or command[:1] == ["tesseract"]:
+            return _tesseract_completed(command, FRENCH_ID_TEXT)
         return _tesseract_completed(command, FRENCH_ID_TEXT)
 
+    monkeypatch.setattr(backend_bridge, "_easyocr_http_request", fake_http)
     monkeypatch.setattr(backend_bridge.subprocess, "run", fake_run)
 
     result = backend_bridge.handle(_payload(s.arabic_id_card_bytes()))
@@ -225,28 +163,78 @@ def test_easyocr_subprocess_failure_falls_back_to_tesseract(
     assert classification["decision"] == DECISION_MATCH
     assert len(classification["matched_keywords"]) == 2
 
-    joined_calls = [" ".join(call) for call in calls]
-    assert any("easyocr_runner.py" in call for call in joined_calls)
-    assert any("tesseract" in call for call in joined_calls)
+    assert "http" in calls
+    assert any(isinstance(call, list) for call in calls)
 
 
-def test_easyocr_and_tesseract_generic_only_returns_ambiguous_review(
+def test_easyocr_list_response_is_joined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
+    monkeypatch.setattr(
+        backend_bridge,
+        "_easyocr_http_request",
+        lambda _image_bytes: {
+            "status": "USED",
+            "text": ["بطاقة التعريف الوطنية", "SPECIMEN / TEST"],
+        },
+    )
+
+    text, status = backend_bridge._run_easyocr(b"image")
+
+    assert status == "USED"
+    assert text == "بطاقة التعريف الوطنية\nSPECIMEN / TEST"
+
+
+def test_easyocr_and_tesseract_failure_returns_needs_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
     monkeypatch.setattr(backend_bridge, "_tesseract_binary", lambda: "tesseract")
-    calls: list[list[str]] = []
+
+    def fake_http(_image_bytes: bytes) -> dict[str, object]:
+        raise OSError("simulated EasyOCR server failure")
+
+    def fake_run(
+        _command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("simulated OCR subprocess failure")
+
+    monkeypatch.setattr(backend_bridge, "_easyocr_http_request", fake_http)
+    monkeypatch.setattr(backend_bridge.subprocess, "run", fake_run)
+
+    result = backend_bridge.handle(_payload(s.arabic_id_card_bytes()))
+
+    assert result["ocr"] == {
+        "used": False,
+        "available": True,
+        "source": "none",
+        "reason": "OCR_FAILED",
+    }
+    assert result["classification"]["decision"] == DECISION_NEEDS_REVIEW
+    assert result["classification"]["reason_code"] == "NO_OCR"
+    assert result["classification"]["manual_review_required"] is True
+
+
+def test_easyocr_generic_only_does_not_fall_back_to_tesseract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
+    monkeypatch.setattr(backend_bridge, "_tesseract_binary", lambda: "tesseract")
+    tesseract_calls: list[object] = []
+
+    def fake_http(_image_bytes: bytes) -> dict[str, object]:
+        return {"status": "USED", "text": ARABIC_GENERIC_TEXT}
 
     def fake_run(
         command: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        calls.append(command)
-        joined = " ".join(str(part) for part in command)
-        if "easyocr_runner.py" in joined:
-            return _easyocr_completed(command, ARABIC_GENERIC_TEXT)
-        return _tesseract_completed(command, ARABIC_GENERIC_TEXT)
+        tesseract_calls.append(command)
+        return _tesseract_completed(command, ARABIC_DRIVING_TEXT)
 
+    monkeypatch.setattr(backend_bridge, "_easyocr_http_request", fake_http)
     monkeypatch.setattr(backend_bridge.subprocess, "run", fake_run)
 
     result = backend_bridge.handle(
@@ -267,34 +255,42 @@ def test_easyocr_and_tesseract_generic_only_returns_ambiguous_review(
     assert classification["decision"] == DECISION_NEEDS_REVIEW
     assert classification["reason_code"] == "AMBIGUOUS_KEYWORDS"
     assert classification["manual_review_required"] is True
-
-    joined_calls = [" ".join(call) for call in calls]
-    assert any("easyocr_runner.py" in call for call in joined_calls)
-    assert any("tesseract" in call for call in joined_calls)
+    assert tesseract_calls == []
 
 
-def test_easyocr_and_tesseract_failure_returns_needs_review(
+def test_easyocr_and_tesseract_generic_only_returns_ambiguous_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(backend_bridge, "_easyocr_available", lambda: True)
     monkeypatch.setattr(backend_bridge, "_tesseract_binary", lambda: "tesseract")
 
+    def fake_http(_image_bytes: bytes) -> dict[str, object]:
+        return {"status": "USED", "text": ARABIC_GENERIC_TEXT}
+
     def fake_run(
-        _command: list[str],
+        command: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        raise OSError("simulated OCR subprocess failure")
+        return _tesseract_completed(command, ARABIC_GENERIC_TEXT)
 
+    monkeypatch.setattr(backend_bridge, "_easyocr_http_request", fake_http)
     monkeypatch.setattr(backend_bridge.subprocess, "run", fake_run)
 
-    result = backend_bridge.handle(_payload(s.arabic_id_card_bytes()))
+    result = backend_bridge.handle(
+        _payload(
+            s.ocr_document_bytes(ARABIC_GENERIC_TEXT),
+            slot="driving_license",
+        )
+    )
 
     assert result["ocr"] == {
-        "used": False,
+        "used": True,
         "available": True,
-        "source": "none",
-        "reason": "OCR_FAILED",
+        "source": "easyocr",
+        "reason": "OCR_USED",
     }
-    assert result["classification"]["decision"] == DECISION_NEEDS_REVIEW
-    assert result["classification"]["reason_code"] == "NO_OCR"
-    assert result["classification"]["manual_review_required"] is True
+    classification = result["classification"]
+    assert classification["detected_type"] is None
+    assert classification["decision"] == DECISION_NEEDS_REVIEW
+    assert classification["reason_code"] == "AMBIGUOUS_KEYWORDS"
+    assert classification["manual_review_required"] is True

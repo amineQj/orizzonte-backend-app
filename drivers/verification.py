@@ -3,18 +3,22 @@
 The backend virtual environment intentionally does not contain OpenCV or numpy.
 The image-quality/classification module therefore runs in its own existing
 virtual environment through a JSON stdin/stdout bridge.  No uploaded filename,
-path, OCR text, or image content is logged here.  The bridge uses a short-lived
-temporary file solely to pass the image to the isolated EasyOCR subprocess.
+path, OCR text, or image content is logged here.  EasyOCR itself runs in a
+separate persistent HTTP server so the model stays warm across requests.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import subprocess
 from pathlib import Path
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
+EASYOCR_DIAG_PREFIX = "EASYOCR_DIAG"
 
 QUALITY_ACCEPTABLE = "ACCEPTABLE_QUALITY"
 QUALITY_RECAPTURE = "NEEDS_RECAPTURE"
@@ -61,8 +65,8 @@ def _bridge_working_directory() -> Path:
 
 
 def _timeout_seconds() -> float:
-    # EasyOCR loads its models in a fresh subprocess on every request, so the
-    # default must allow for model startup as well as OCR on a phone photo.
+    # Allow for the bridge subprocess, the EasyOCR HTTP call, and a possible
+    # Tesseract fallback on a slower CPU.
     configured = getattr(settings, "VERIFICATION_AGENT_TIMEOUT_SECONDS", 180)
     try:
         value = float(configured)
@@ -113,6 +117,11 @@ def run_verification(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise VerificationUnavailable("verification_process_failed") from exc
+
+    if getattr(settings, "DEBUG", False):
+        for line in completed.stderr.decode("utf-8", errors="replace").splitlines():
+            if line.startswith(EASYOCR_DIAG_PREFIX + " "):
+                logger.warning("%s", line)
 
     if completed.returncode != 0:
         raise VerificationUnavailable("verification_process_failed")

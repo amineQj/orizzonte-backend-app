@@ -11,6 +11,7 @@ identity data, and the endpoint never receives or returns OCR text.
 from __future__ import annotations
 
 import io
+import time
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -283,6 +284,19 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
             format="multipart",
         )
 
+    def _wait_for_task(self, task_id, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            response = self.client.get(
+                reverse("verification-status", kwargs={"task_id": task_id})
+            )
+            if response.status_code != 202:
+                return response
+            time.sleep(0.05)
+        return self.client.get(
+            reverse("verification-status", kwargs={"task_id": task_id})
+        )
+
     def test_anonymous_is_unauthorized(self):
         response = APIClient().post(
             self.url,
@@ -315,6 +329,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         tiny = Image.new("RGB", (16, 16), (240, 240, 240))
         response = self._post(data=_to_png(tiny))
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["quality_status"], "NEEDS_RECAPTURE")
@@ -325,6 +342,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
     def test_good_document_without_ocr_returns_manual_review(self):
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertIn(
@@ -349,6 +369,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
 
         response = self._post(query="debug=1")
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["ocr_debug_text"], "SYNTHETIC OCR TEXT")
         self.assertIs(run.call_args.kwargs["debug_ocr"], True)
@@ -362,6 +385,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
 
         response = self._post(query="debug=1")
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("ocr_debug_text", response.json())
         self.assertIs(run.call_args.kwargs["debug_ocr"], False)
@@ -375,6 +401,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
 
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("ocr_debug_text", response.json())
         self.assertIs(run.call_args.kwargs["debug_ocr"], False)
@@ -388,6 +417,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
 
         response = self._post(query="debug=1")
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("ocr_debug_text", response.json())
         self.assertIs(run.call_args.kwargs["debug_ocr"], False)
@@ -397,6 +429,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         run.return_value = _fake_result()
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["final_decision"], "ACCEPT")
         self.assertEqual(response.json()["quality_status"], "ACCEPTABLE_QUALITY")
@@ -407,6 +442,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         run.return_value = _fake_result(quality_status="POOR_QUALITY")
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["final_decision"], "MANUAL_REVIEW")
 
@@ -418,6 +456,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         )
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["final_decision"], "MANUAL_REVIEW")
         self.assertEqual(response.json()["consistency"], "MISMATCH")
@@ -427,6 +468,9 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         run.return_value = _fake_result(quality_status="NEEDS_RECAPTURE")
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["final_decision"], "REJECT")
 
@@ -435,5 +479,8 @@ class VerificationCheckEndpointTests(DriverAPITestCase):
         run.side_effect = VerificationUnavailable("verification_python_missing")
         response = self._post()
 
+        self.assertEqual(response.status_code, 202)
+        task_id = response.json()["task_id"]
+        response = self._wait_for_task(task_id)
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["code"], "verification_python_missing")
