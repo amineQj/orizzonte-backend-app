@@ -20,6 +20,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 from django.contrib.auth import get_user_model
+from drivers.models import DriverProfile
 
 from missions.models import Mission, MissionStatus, TruckSize
 from missions.services import (
@@ -40,22 +41,26 @@ User = get_user_model()
 
 @pytest.fixture
 def client_user(db):
-    return User.objects.create_user(username="client1", password="pass", role="client")
+    return User.objects.create_user(username="client1", password="pass", role="client", email="client1@example.com")
 
 
 @pytest.fixture
 def employee_user(db):
-    return User.objects.create_user(username="emp1", password="pass", role="driver")
+    user = User.objects.create_user(username="emp1", password="pass", role="driver", email="emp1@example.com")
+    DriverProfile.objects.create(user=user, status=DriverProfile.Status.APPROVED)
+    return user
 
 
 @pytest.fixture
 def other_employee(db):
-    return User.objects.create_user(username="emp2", password="pass", role="driver")
+    user = User.objects.create_user(username="emp2", password="pass", role="driver", email="emp2@example.com")
+    DriverProfile.objects.create(user=user, status=DriverProfile.Status.APPROVED)
+    return user
 
 
 @pytest.fixture
 def boss_user(db):
-    return User.objects.create_user(username="boss1", password="pass", role="boss")
+    return User.objects.create_user(username="boss1", password="pass", role="boss", email="boss1@example.com")
 
 
 def make_payload(**overrides) -> dict:
@@ -124,6 +129,8 @@ class TestStartMissionService:
 
     def test_cannot_start_pending_mission(self, pending_mission, employee_user):
         """pending â†’ in_progress is not a valid transition."""
+        pending_mission.assigned_employee = employee_user
+        pending_mission.save()
         with pytest.raises(MissionInvalidTransitionError, match="expected status 'accepted'"):
             start_mission(pending_mission.pk, employee_user)
 
@@ -157,6 +164,8 @@ class TestCompleteMissionService:
             complete_mission(accepted_mission.pk, employee_user)
 
     def test_cannot_complete_pending_mission(self, pending_mission, employee_user):
+        pending_mission.assigned_employee = employee_user
+        pending_mission.save()
         with pytest.raises(MissionInvalidTransitionError):
             complete_mission(pending_mission.pk, employee_user)
 
@@ -298,21 +307,21 @@ class TestDisplayStatusField:
     def test_pending_shows_available(self, pending_mission, employee_user):
         response = self._get_list(employee_user)
         assert response.status_code == status.HTTP_200_OK
-        record = next(m for m in response.data if m["id"] == pending_mission.pk)
+        record = next(m for m in response.data["results"] if m["id"] == pending_mission.pk)
         assert record["display_status"] == "available"
         assert record["is_taken"] is False
 
     def test_accepted_shows_taken(self, accepted_mission, employee_user):
         response = self._get_list(employee_user)
         assert response.status_code == status.HTTP_200_OK
-        record = next(m for m in response.data if m["id"] == accepted_mission.pk)
+        record = next(m for m in response.data["results"] if m["id"] == accepted_mission.pk)
         assert record["display_status"] == "taken"
         assert record["is_taken"] is True
 
     def test_in_progress_shows_in_progress(self, in_progress_mission, employee_user):
         response = self._get_list(employee_user)
         assert response.status_code == status.HTTP_200_OK
-        record = next(m for m in response.data if m["id"] == in_progress_mission.pk)
+        record = next(m for m in response.data["results"] if m["id"] == in_progress_mission.pk)
         assert record["display_status"] == "in_progress"
         assert record["is_taken"] is True
 
@@ -321,7 +330,7 @@ class TestDisplayStatusField:
         complete_mission(in_progress_mission.pk, employee_user)
 
         response = self._get_list(employee_user)
-        ids = [m["id"] for m in response.data]
+        ids = [m["id"] for m in response.data["results"]]
         assert in_progress_mission.pk not in ids
 
 
@@ -332,7 +341,7 @@ class TestBossSeeFullLifecycle:
         response = auth_api(boss_user).get(url)
 
         assert response.status_code == status.HTTP_200_OK
-        record = next(m for m in response.data if m["id"] == in_progress_mission.pk)
+        record = next(m for m in response.data["results"] if m["id"] == in_progress_mission.pk)
         assert record["status"] == MissionStatus.IN_PROGRESS
         assert record["assigned_employee"] is not None
 
@@ -341,8 +350,8 @@ class TestBossSeeFullLifecycle:
         response = auth_api(boss_user).get(url, {"status": "in_progress"})
 
         assert response.status_code == status.HTTP_200_OK
-        assert all(m["status"] == MissionStatus.IN_PROGRESS for m in response.data)
-        ids = [m["id"] for m in response.data]
+        assert all(m["status"] == MissionStatus.IN_PROGRESS for m in response.data["results"])
+        ids = [m["id"] for m in response.data["results"]]
         assert in_progress_mission.pk in ids
         assert pending_mission.pk not in ids
 

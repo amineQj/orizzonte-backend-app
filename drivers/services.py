@@ -15,7 +15,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .constants import KEY_INFO_FIELDS
+from .constants import DOCUMENT_TYPES, KEY_INFO_FIELDS
 from .documents import (
     DocumentValidationError,  # re-exported for the views
     delete_document,
@@ -43,6 +43,23 @@ class VersionConflictError(Exception):
     def __init__(self, current: int):
         self.current = current
         super().__init__("The driver's documents changed since the analysis.")
+
+
+class VerificationRequiredError(Exception):
+    """A document has not been successfully verified yet (→ HTTP 409)."""
+
+    def __init__(self, slot: str):
+        self.slot = slot
+        super().__init__(f"Verification is required for {slot}.")
+
+
+class DocumentRejectedError(Exception):
+    """A document was rejected by verification (→ HTTP 409)."""
+
+    def __init__(self, slot: str, reason_codes=None):
+        self.slot = slot
+        self.reason_codes = list(reason_codes or [])
+        super().__init__(f"Document {slot} was rejected.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -142,9 +159,28 @@ def submit_profile(profile) -> DriverProfile:
         if missing["info"] or missing["documents"]:
             raise MissingFieldsError(missing)
 
+        limit = int(getattr(settings, "VERIFICATION_REJECT_RETRY_LIMIT", 3))
+        flagged = False
+        for slot in DOCUMENT_TYPES:
+            # A document must exist before verification can apply.
+            if not getattr(locked, slot):
+                continue
+            result = (locked.verification_results or {}).get(slot) or {}
+            if not result or int(result.get("documents_version", -1)) != locked.documents_version:
+                raise VerificationRequiredError(slot)
+            decision = result.get("final_decision")
+            if decision == "REJECT":
+                count = int((locked.verification_reject_counts or {}).get(slot, 0))
+                if count < limit:
+                    raise DocumentRejectedError(slot, result.get("reason_codes", []))
+                flagged = True
+            elif decision not in ("ACCEPT", "MANUAL_REVIEW"):
+                raise VerificationRequiredError(slot)
+
         locked.status = DriverProfile.Status.PENDING_REVIEW
         locked.rejection_reason = ""
-        locked.save(update_fields=["status", "rejection_reason", "updated_at"])
+        locked.verification_flagged_for_manual_review = flagged
+        locked.save(update_fields=["status", "rejection_reason", "verification_flagged_for_manual_review", "updated_at"])
 
     return DriverProfile.objects.get(pk=profile.pk)
 
@@ -157,7 +193,16 @@ def approve_profile(profile, boss) -> DriverProfile:
     """Boss approves (or corrects to approved). Journalised."""
     with transaction.atomic():
         locked = DriverProfile.objects.select_for_update().get(pk=profile.pk)
-        if locked.status == DriverProfile.Status.INCOMPLETE:
+        if locked.status != DriverProfile.Status.PENDING_REVIEW:
+            raise ProfileTransitionError(
+                "The profile must be submitted for review before it can be approved."
+            )
+
+        missing = locked.missing_fields()
+        if missing["info"] or missing["documents"]:
+            raise MissingFieldsError(missing)
+
+        if locked.status == DriverProfile.Status.INCOMPLETE:  # kept for compatibility
             raise ProfileTransitionError(
                 "Cannot approve an incomplete profile."
             )

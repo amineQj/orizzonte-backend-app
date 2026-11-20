@@ -196,6 +196,13 @@ class Mission(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Mission"
         verbose_name_plural = "Missions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["assigned_employee"],
+                condition=Q(status__in=["accepted", "in_progress"]),
+                name="uniq_active_driver_mission",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Mission #{self.pk} — {self.client} [{self.status}]"

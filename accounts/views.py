@@ -16,7 +16,7 @@ What lives here:
     - DriverDetailView→ GET/DELETE /api/users/employees/<id>/ (boss only)
 """
 from django.conf import settings
-from django.contrib.auth.tokens import default_token_generator
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core.mail import send_mail
 from django.http import HttpResponse
 from django.urls import reverse
@@ -25,15 +25,17 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from demenagement.throttling import DynamicScopedRateThrottle as ScopedRateThrottle
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from urllib.parse import urlencode
 
 import logging
 
 from .models import User
 from .permissions import IsBoss
+from authentication.views import LogoutSerializer
 from .serializers import (
     DriverDetailSerializer,
     DriverListSerializer,
@@ -54,6 +56,15 @@ logger = logging.getLogger(__name__)
 #  Email verification helpers
 # ─────────────────────────────────────────────────────────────
 
+class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
+    def _make_hash_value(self, user, timestamp):
+        value = super()._make_hash_value(user, timestamp)
+        return f"{value}{getattr(user, 'email_verified', False)}"
+
+
+email_verification_token_generator = EmailVerificationTokenGenerator()
+
+
 def _build_verification_url(user):
     """
     Build <SITE_URL>/api/verify-email/?uid=<pk>&token=<token>
@@ -63,7 +74,7 @@ def _build_verification_url(user):
     internet in production — never hard-coded to 127.0.0.1.
     Uses Django's official token generator (never a homemade one).
     """
-    token = default_token_generator.make_token(user)
+    token = email_verification_token_generator.make_token(user)
     path = reverse('verify-email')                     # → /api/verify-email/
     query = urlencode({'uid': user.pk, 'token': token})
     return f'{settings.SITE_URL}{path}?{query}'
@@ -156,6 +167,8 @@ class SignUpView(APIView):
     400 → { "message": "...", "errors": { ... } }
     """
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "signup"
 
     def post(self, request):
         serializer = SignUpSerializer(data=request.data)
@@ -171,15 +184,21 @@ class SignUpView(APIView):
 
         try:
             send_verification_email(user)
-        except Exception:
-            # Never log the token, only the user id.
+            email_sent = True
+        except Exception as exc:  # pragma: no cover - network/SMTP dependent
+            # Never log the token or recipient details, only the exception class.
+            email_sent = False
             logger.warning(
-                "Could not send the verification email to user id=%s", user.pk
+                "Could not send the verification email to user id=%s: %s",
+                user.pk,
+                type(exc).__name__,
             )
 
         return Response(
             {
-                "message": "Account created successfully. A verification email has been sent.",
+                "message": "Account created successfully. "
+                + ("A verification email has been sent." if email_sent else "Verification email could not be sent; use resend."),
+                "email_sent": email_sent,
                 "user": UserResponseSerializer(user).data,
             },
             status=status.HTTP_201_CREATED,
@@ -229,12 +248,16 @@ class VerifyEmailView(APIView):
         )
 
         if _wants_html(request):
-            return HttpResponse(
+            response = HttpResponse(
                 _verification_page(message, success),
                 status=code,
                 content_type='text/html; charset=utf-8',
             )
-        return Response({"message": message}, status=code)
+        else:
+            response = Response({"message": message}, status=code)
+        response["Referrer-Policy"] = "no-referrer"
+        response["Cache-Control"] = "no-store"
+        return response
 
     @staticmethod
     def _resolve(uid, token):
@@ -263,7 +286,7 @@ class VerifyEmailView(APIView):
 
         # check_token() validates the signature AND the expiry
         # (settings.PASSWORD_RESET_TIMEOUT). It returns False if invalid.
-        if not default_token_generator.check_token(user, token):
+        if not email_verification_token_generator.check_token(user, token):
             return invalid
 
         user.email_verified = True
@@ -344,7 +367,39 @@ class LoginView(TokenObtainPairView):
     401 → { "detail": "Please verify your email before logging in." }
     """
     permission_classes = [AllowAny]
-    serializer_class = RoleAwareTokenSerializer   # ← only change vs old LoginView
+    serializer_class = RoleAwareTokenSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "token"
+
+
+class LogoutView(APIView):
+    """
+    POST /api/logout/
+
+    Blacklist the provided refresh token. The refresh token alone is enough;
+    an access token is accepted but not required.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "logout"
+
+    def post(self, request):
+        serializer = LogoutSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"message": "Logout failed.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer.save()
+        return Response(
+            {"message": "Logged out successfully. Token has been invalidated."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class RefreshTokenView(TokenRefreshView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "refresh"
 
 
 class MeView(APIView):
@@ -371,6 +426,12 @@ class MeView(APIView):
 #  Driver management (boss only)
 # ─────────────────────────────────────────────────────────────
 
+class EmployeePagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
 class DriverListView(APIView):
     """
     GET /api/users/employees/
@@ -386,10 +447,9 @@ class DriverListView(APIView):
 
     def get(self, request):
         drivers = User.objects.filter(role=User.Role.DRIVER).order_by('date_joined')
-        return Response(
-            DriverListSerializer(drivers, many=True).data,
-            status=status.HTTP_200_OK,
-        )
+        paginator = EmployeePagination()
+        page = paginator.paginate_queryset(drivers, request, view=self)
+        return paginator.get_paginated_response(DriverListSerializer(page, many=True).data)
 
 
 class DriverDetailView(APIView):

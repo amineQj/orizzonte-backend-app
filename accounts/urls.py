@@ -19,14 +19,14 @@ Note: /api/users/employees/create/ was REMOVED — it now returns 404 for
 every role. Drivers sign up themselves through POST /api/signup/.
 """
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
 
-from authentication.views import LogoutView   # existing endpoint, unchanged
 from .views import (
     DriverDetailView,
     DriverListView,
     LoginView,
+    LogoutView,
     MeView,
+    RefreshTokenView,
     ResendVerificationView,
     SignUpView,
     VerifyEmailView,
@@ -38,7 +38,7 @@ urlpatterns = [
     path('verify-email/', VerifyEmailView.as_view(), name='verify-email'),
     path('resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
     path('token/', LoginView.as_view(), name='token_obtain_pair'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', RefreshTokenView.as_view(), name='token_refresh'),
 
     # ── Authenticated ──────────────────────────────────────────
     path('logout/', LogoutView.as_view(), name='logout'),

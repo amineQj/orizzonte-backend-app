@@ -14,6 +14,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 from django.contrib.auth import get_user_model
+from drivers.models import DriverProfile
 
 from missions.models import Mission, MissionStatus, TruckSize
 from missions.services import create_mission
@@ -71,17 +72,19 @@ def make_service_payload(**overrides) -> dict:
 
 @pytest.fixture
 def client_user(db):
-    return User.objects.create_user(username="client1", password="pass", role="client")
+    return User.objects.create_user(username="client1", password="pass", role="client", email="client1@example.com")
 
 
 @pytest.fixture
 def employee_user(db):
-    return User.objects.create_user(username="emp1", password="pass", role="driver")
+    user = User.objects.create_user(username="emp1", password="pass", role="driver", email="emp1@example.com")
+    DriverProfile.objects.create(user=user, status=DriverProfile.Status.APPROVED)
+    return user
 
 
 @pytest.fixture
 def boss_user(db):
-    return User.objects.create_user(username="boss1", password="pass", role="boss")
+    return User.objects.create_user(username="boss1", password="pass", role="boss", email="boss1@example.com")
 
 
 def auth_client(user) -> APIClient:
@@ -284,12 +287,13 @@ class TestAvailableMissionsView:
         response = api.get(reverse("missions:mission-available"))
 
         assert response.status_code == status.HTTP_200_OK
-        assert len(response.data) == 1
-        record = response.data[0]
+        results = response.data["results"]
+        assert len(results) == 1
+        record = results[0]
         assert "shipment_type" in record
-        assert "phone_number" in record
+        # D11: phone numbers are hidden on the available-missions list.
+        assert record["phone_number"] is None
         assert record["shipment_type"] == "house_moving"
-        assert record["phone_number"] == "0551234567"
 
     def test_is_taken_flag_works_correctly(self, client_user, employee_user):
         m1 = create_mission(client_user, make_service_payload())
@@ -302,7 +306,7 @@ class TestAvailableMissionsView:
         response = api.get(reverse("missions:mission-available"))
 
         assert response.status_code == status.HTTP_200_OK
-        by_id = {m["id"]: m for m in response.data}
+        by_id = {m["id"]: m for m in response.data["results"]}
         assert by_id[m1.pk]["is_taken"] is False
         assert by_id[m2.pk]["is_taken"] is True
         assert by_id[m2.pk]["taken_by"] is not None
@@ -331,7 +335,9 @@ class TestAcceptMissionView:
         assert mission.assigned_employee == employee_user
 
     def test_second_employee_gets_409(self, client_user, employee_user, db):
-        emp2 = User.objects.create_user(username="emp2", password="pass", role="driver")
+        emp2 = User.objects.create_user(username="emp2", password="pass", role="driver", email="emp2b@example.com")
+        from drivers.models import DriverProfile
+        DriverProfile.objects.create(user=emp2, status=DriverProfile.Status.APPROVED)
         mission = create_mission(client_user, make_service_payload())
 
         auth_client(employee_user).post(
@@ -366,8 +372,9 @@ class TestAllMissionsView:
         response = api.get(reverse("missions:mission-all"))
 
         assert response.status_code == status.HTTP_200_OK
-        assert len(response.data) == 1
-        record = response.data[0]
+        results = response.data["results"]
+        assert len(results) == 1
+        record = results[0]
         assert record["shipment_type"] == "heavy_equipment"
         assert record["phone_number"] == "0771234567"
 
@@ -377,7 +384,7 @@ class TestAllMissionsView:
         response = api.get(reverse("missions:mission-all"))
 
         assert response.status_code == status.HTTP_200_OK
-        record = response.data[0]
+        record = response.data["results"][0]
         for field in ("client", "assigned_employee", "price", "size",
                       "shipment_type", "phone_number"):
             assert field in record, f"Missing field: {field}"
@@ -392,7 +399,8 @@ class TestAllMissionsView:
         api = auth_client(boss_user)
         response = api.get(reverse("missions:mission-all"), {"status": "accepted"})
         assert response.status_code == status.HTTP_200_OK
-        assert len(response.data) == 1
+        assert response.data["count"] == 1
+        assert len(response.data["results"]) == 1
 
     def test_employee_cannot_access_boss_endpoint(self, employee_user):
         response = auth_client(employee_user).get(reverse("missions:mission-all"))

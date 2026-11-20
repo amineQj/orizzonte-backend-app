@@ -215,15 +215,22 @@ def accept_mission(mission_id: int, employee) -> Mission:
         mission.assigned_employee = employee
         mission.held_by = None
         mission.hold_expires_at = None
-        mission.save(
-            update_fields=[
-                "status",
-                "assigned_employee",
-                "held_by",
-                "hold_expires_at",
-                "updated_at",
-            ]
-        )
+        from django.db import IntegrityError
+
+        try:
+            mission.save(
+                update_fields=[
+                    "status",
+                    "assigned_employee",
+                    "held_by",
+                    "hold_expires_at",
+                    "updated_at",
+                ]
+            )
+        except IntegrityError as exc:
+            raise MissionAlreadyAcceptedError(
+                f"Mission #{mission_id} has already been accepted by another driver."
+            ) from exc
 
         # A direct accept bypasses the negotiation price: close the open
         # negotiation instead of treating it as accepted.

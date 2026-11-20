@@ -70,6 +70,16 @@ def verify(client, uid, token):
 #  Signup
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class SignUpTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -169,6 +179,16 @@ class SignUpTests(TestCase):
 #  Email verification
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class VerifyEmailTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -221,6 +241,16 @@ class VerifyEmailTests(TestCase):
 #  Login (email + password + verification check)
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class LoginTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -279,6 +309,16 @@ class LoginTests(TestCase):
 #  JWT: protected endpoint, refresh, logout, blacklist
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class JwtFlowTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -416,6 +456,16 @@ class ResendVerificationTests(TestCase):
 #  Driver endpoints (boss only) + the REMOVED create route
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class DriverEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -464,7 +514,7 @@ class DriverEndpointTests(TestCase):
     def test_boss_can_list_detail_and_delete_drivers(self):
         listing = self.client.get(reverse('employee-list'), **self.auth)
         self.assertEqual(listing.status_code, 200)
-        ids = [item['id'] for item in listing.json()]
+        ids = [item['id'] for item in listing.json()['results']]
         self.assertIn(self.driver.id, ids)
         self.assertNotIn(self.boss.id, ids)      # never the boss
         self.assertNotIn(self.client_user.id, ids)  # never a client
@@ -509,6 +559,16 @@ class DriverEndpointTests(TestCase):
 #  Missions routes still mounted
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class MissionRoutesTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -532,7 +592,7 @@ class MissionRoutesTests(TestCase):
         response = self.client.get(reverse('missions:mission-all'), **self.auth)
 
         self.assertEqual(response.status_code, 200)
-        self.assertIsInstance(response.json(), list)
+        self.assertIsInstance(response.json()["results"], list)
 
     def test_missions_require_authentication(self):
         response = self.client.get(reverse('missions:mission-all'))
@@ -553,6 +613,16 @@ def link_line(message):
     )
 
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class VerificationEmailTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -608,6 +678,16 @@ class VerificationEmailTests(TestCase):
 #  Verification link opened in a browser → HTML page
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class VerifyEmailHtmlTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -662,6 +742,16 @@ class VerifyEmailHtmlTests(TestCase):
 #  me → refresh → logout → refresh refused
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class CompleteFlowTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -722,6 +812,16 @@ class CompleteFlowTests(TestCase):
 #  Driver full flow: signup(driver) → verify → login → me
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class DriverFullFlowTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -758,6 +858,16 @@ class DriverFullFlowTests(TestCase):
 #  Role / permission matrix: boss, client, driver, anonymous
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class PermissionMatrixTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -838,6 +948,16 @@ class PermissionMatrixTests(TestCase):
 #  Management command: create_boss
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class CreateBossCommandTests(TestCase):
     def test_create_boss_creates_a_verified_superuser_with_role_boss(self):
         out = StringIO()
@@ -890,6 +1010,16 @@ class CreateBossCommandTests(TestCase):
 #  Management command: reset_users
 # ─────────────────────────────────────────────────────────────
 
+@override_settings(DEFAULT_THROTTLE_RATES={
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '1000/min',
+    'refresh': '1000/min',
+    'signup': '1000/hour',
+    'verification-check': '1000/hour',
+    'logout': '1000/min',
+})
 class ResetUsersCommandTests(TestCase):
     def _seed(self):
         User.objects.create_user(

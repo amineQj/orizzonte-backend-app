@@ -316,7 +316,7 @@ sauf refus `401` / `403` selon le rôle. Les règles métier (prix, statuts) ne 
 | boss | `GET` | `/api/missions/employee/<id>/` |
 | boss | `POST` | `/api/missions/<id>/assign/` |
 | boss | `POST` | `/api/missions/<id>/cancel/` |
-| boss | `POST` | `/api/missions/<id>/delete/` |
+| boss | `DELETE` | `/api/missions/<id>/delete/` |
 
 Un appel hors rôle → `403` (même message que les chauffeurs ci-dessus).
 Les chemins contenant `employee` (`/api/missions/employee/<id>/`, `/api/users/employees/`) sont **conservés** pour la compatibilité front.

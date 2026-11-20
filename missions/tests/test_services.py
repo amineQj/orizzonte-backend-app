@@ -28,17 +28,17 @@ User = get_user_model()
 
 @pytest.fixture
 def client_user(db):
-    return User.objects.create_user(username="client1", password="pass", role="client")
+    return User.objects.create_user(username="client1", password="pass", role="client", email="client1@example.com")
 
 
 @pytest.fixture
 def employee_user(db):
-    return User.objects.create_user(username="emp1", password="pass", role="driver")
+    return User.objects.create_user(username="emp1", password="pass", role="driver", email="emp1@example.com")
 
 
 @pytest.fixture
 def employee_user_2(db):
-    return User.objects.create_user(username="emp2", password="pass", role="driver")
+    return User.objects.create_user(username="emp2", password="pass", role="driver", email="emp2@example.com")
 
 
 def make_payload(**overrides) -> dict:

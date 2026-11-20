@@ -10,6 +10,7 @@ Include in your project's root urls.py:
 Which gives you:
     POST   /api/missions/estimate/
     POST   /api/missions/confirm/
+    GET    /api/missions/client/my/
     GET    /api/missions/available/
     POST   /api/missions/<pk>/accept/
     POST   /api/missions/<pk>/start/
@@ -37,6 +38,7 @@ from .views import (
     AvailableMissionsView,
     BossDashboardView,
     CompleteMissionView,
+    ClientMissionHistoryView,
     MissionConfirmView,
     PriceEstimateView,
     PricingRulesView,
@@ -58,7 +60,12 @@ urlpatterns = [
     # ── Client ──────────────────────────────────────────────────────────────
     path("missions/estimate/", PriceEstimateView.as_view(), name="mission-estimate"),
     path("missions/confirm/", MissionConfirmView.as_view(), name="mission-confirm"),
- 
+    path(
+        "missions/client/my/",
+        ClientMissionHistoryView.as_view(),
+        name="mission-client-my",
+    ),
+
     # ── Driver ───────────────────────────────────────────────────────────────
     path("missions/available/", AvailableMissionsView.as_view(), name="mission-available"),
     path("missions/my/", DriverMissionHistoryView.as_view(), name="mission-my"),

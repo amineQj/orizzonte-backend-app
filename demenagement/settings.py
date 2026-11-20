@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -16,18 +17,24 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 # Secrets come from the environment (.env), never hard-coded for production.
-SECRET_KEY = os.environ.get(
-    'SECRET_KEY',
-    'django-insecure-change-this-in-production-use-env-variable',
-)
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = 'django-insecure-dev-only-change-me'
+    else:
+        raise ImproperlyConfigured('SECRET_KEY environment variable is required when DEBUG is False')
+if not DEBUG and len(SECRET_KEY) < 50:
+    raise ImproperlyConfigured('SECRET_KEY must be at least 50 characters when DEBUG is False')
 
-# Dev: '*' so a phone on the same Wi-Fi can reach the API (Host: 192.168.x.x).
-# Production: ALLOWED_HOSTS=mon-domaine.com,192.168.1.20
 ALLOWED_HOSTS = [
-    h.strip() for h in os.environ.get('ALLOWED_HOSTS', '*').split(',') if h.strip()
+    h.strip() for h in os.environ.get('ALLOWED_HOSTS', '').split(',') if h.strip()
 ]
+if not DEBUG and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured('ALLOWED_HOSTS must be set when DEBUG is False')
+if not DEBUG and '*' in ALLOWED_HOSTS:
+    raise ImproperlyConfigured('ALLOWED_HOSTS cannot contain \"*\" when DEBUG is False')
 
 # Public base URL of the backend — used to build the email-verification link
 # so it is openable from a phone (e.g. http://192.168.1.20:8000 in the demo).
@@ -136,6 +143,17 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ─────────────────────────────────────────────────────────────
 #  Django REST Framework
 # ─────────────────────────────────────────────────────────────
+DEFAULT_THROTTLE_RATES = {
+    'resend-verification': '5/min',
+    'driver-upload': '20/hour',
+    'agent': '60/min',
+    'token': '10/min',
+    'refresh': '30/min',
+    'signup': '5/hour',
+    'verification-check': '20/hour',
+    'logout': '10/min',
+}
+
 REST_FRAMEWORK = {
     # All endpoints require authentication by default
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -148,12 +166,11 @@ REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': (
         'rest_framework.renderers.JSONRenderer',
     ),
-    # Rate limits for sensitive public endpoints
-    'DEFAULT_THROTTLE_RATES': {
-        'resend-verification': '5/min',
-        'driver-upload': '20/hour',
-        'agent': '60/min',
-    },
+    'DEFAULT_THROTTLE_CLASSES': (
+        'demenagement.throttling.DynamicScopedRateThrottle',
+    ),
+    'EXCEPTION_HANDLER': 'demenagement.exceptions.custom_exception_handler',
+    'DEFAULT_THROTTLE_RATES': DEFAULT_THROTTLE_RATES,
 }
 
 
@@ -183,12 +200,18 @@ SIMPLE_JWT = {
 }
 
 
-CORS_ALLOW_ALL_ORIGINS = True  # For development; restrict in production
+CORS_ALLOW_ALL_ORIGINS = DEBUG and os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    origin.strip()
+    for origin in os.environ.get(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173',
+    ).split(',')
+    if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+if CORS_ALLOW_ALL_ORIGINS and CORS_ALLOW_CREDENTIALS:
+    raise ImproperlyConfigured('CORS_ALLOW_ALL_ORIGINS cannot be True together with CORS_ALLOW_CREDENTIALS')
 
 
 # ─────────────────────────────────────────────────────────────
@@ -266,12 +289,17 @@ VERIFICATION_AGENT_PYTHON = os.environ.get('VERIFICATION_AGENT_PYTHON', '')
 VERIFICATION_AGENT_TIMEOUT_SECONDS = float(
     os.environ.get('VERIFICATION_AGENT_TIMEOUT_SECONDS', '180')
 )
-# Useful when a deployment deliberately wants classification without OCR.
-VERIFICATION_AGENT_DISABLE_OCR = (
-    os.environ.get('VERIFICATION_AGENT_DISABLE_OCR', 'False') == 'True'
-)
-# Raw OCR text is exposed only with DEBUG + this flag + ?debug=1.  Never
-# enable it in production.
-VERIFICATION_AGENT_DEBUG_OCR = (
-    os.environ.get('VERIFICATION_AGENT_DEBUG_OCR', str(DEBUG)) == 'True'
+# Security hardening for production (DEBUG=False). Values are env-controlled
+# where a deployment needs to tune them.
+if not DEBUG:
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"
+    SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_SSL_REDIRECT = os.environ.get("SECURE_SSL_REDIRECT", "False") == "True"
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    VERIFICATION_REJECT_RETRY_LIMIT = int(
+    os.environ.get("VERIFICATION_REJECT_RETRY_LIMIT", "3")
 )

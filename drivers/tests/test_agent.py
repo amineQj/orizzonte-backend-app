@@ -70,7 +70,7 @@ class AgentQueryTests(DriverAPITestCase):
         response = self.agent.get(reverse("agent-driver-pending"))
         self.assertEqual(response.status_code, 200)
         row = next(
-            r for r in response.json() if r["user_id"] == self.driver.pk
+            r for r in response.json()["results"] if r["user_id"] == self.driver.pk
         )
         self.assertEqual(row["documents_version"], 0)
         self.assertEqual(row["status"], Status.PENDING_REVIEW)
@@ -91,11 +91,30 @@ class AgentQueryTests(DriverAPITestCase):
             reverse("agent-driver-document", args=[self.driver.pk, "selfie"]),
         )
 
+    def test_document_route_requires_key(self):
+        response = APIClient().get(
+            reverse("agent-driver-document", args=[self.driver.pk, "selfie"])
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_document_route_neutral_404_for_unknown_profile(self):
+        response = self.agent.get(
+            reverse("agent-driver-document", args=[999999, "selfie"])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_document_route_neutral_404_for_missing_document(self):
+        # Profile exists but the file is absent on disk.
+        response = self.agent.get(
+            reverse("agent-driver-document", args=[self.driver.pk, "selfie"])
+        )
+        self.assertEqual(response.status_code, 404)
+
     def test_pending_list_excludes_other_statuses(self):
         other = make_user(User.Role.DRIVER, username="agent_approved")
         make_profile(other, complete=True, status=Status.APPROVED)
         response = self.agent.get(reverse("agent-driver-pending"))
-        ids = [r["user_id"] for r in response.json()]
+        ids = [r["user_id"] for r in response.json()["results"]]
         self.assertIn(self.driver.pk, ids)
         self.assertNotIn(other.pk, ids)
 

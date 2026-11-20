@@ -42,17 +42,17 @@ User = get_user_model()
  
 @pytest.fixture
 def boss_user(db):
-    return User.objects.create_user(username="boss1", password="pass", role="boss")
+    return User.objects.create_user(username="boss1", password="pass", role="boss", email="boss1@example.com")
  
  
 @pytest.fixture
 def client_user(db):
-    return User.objects.create_user(username="client1", password="pass", role="client")
+    return User.objects.create_user(username="client1", password="pass", role="client", email="client1@example.com")
  
  
 @pytest.fixture
 def employee_user(db):
-    return User.objects.create_user(username="emp1", password="pass", role="driver")
+    return User.objects.create_user(username="emp1", password="pass", role="driver", email="emp1@example.com")
  
  
 def auth_api(user) -> APIClient:

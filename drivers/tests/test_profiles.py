@@ -7,6 +7,7 @@ Driver profile lifecycle, submission and boss decisions.
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
+from drivers.constants import DOCUMENT_TYPES
 from drivers.models import DriverProfile, DriverReviewLog
 from drivers.tests.base import (
     DriverAPITestCase,
@@ -209,13 +210,37 @@ class ProfileSubmitTests(DriverAPITestCase):
         self.assertEqual(len(body["missing"]["documents"]), 5)
 
     def test_submit_complete_transitions_to_pending(self):
-        make_profile(self.driver, complete=True)
+        profile = make_profile(self.driver, complete=True)
+        profile.verification_results = {
+            name: {
+                "final_decision": "ACCEPT",
+                "quality_status": "ACCEPTABLE_QUALITY",
+                "reason_codes": [],
+                "documents_version": profile.documents_version,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+            for name in DOCUMENT_TYPES
+        }
+        profile.verification_reject_counts = {name: 0 for name in DOCUMENT_TYPES}
+        profile.save()
         response = self.driver_client.post(self.url)
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()["status"], Status.PENDING_REVIEW)
 
     def test_submit_twice_conflicts(self):
-        make_profile(self.driver, complete=True)
+        profile = make_profile(self.driver, complete=True)
+        profile.verification_results = {
+            name: {
+                "final_decision": "ACCEPT",
+                "quality_status": "ACCEPTABLE_QUALITY",
+                "reason_codes": [],
+                "documents_version": profile.documents_version,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+            for name in DOCUMENT_TYPES
+        }
+        profile.verification_reject_counts = {name: 0 for name in DOCUMENT_TYPES}
+        profile.save()
         self.driver_client.post(self.url)
         response = self.driver_client.post(self.url)
         self.assertEqual(response.status_code, 409)
@@ -290,7 +315,19 @@ class BossDecisionTests(DriverAPITestCase):
         self.assertIn("blurred", driver_view["rejection_reason"])
 
     def test_rejected_profile_can_be_resubmitted(self):
-        make_profile(self.driver, complete=True, status=Status.PENDING_REVIEW)
+        profile = make_profile(self.driver, complete=True, status=Status.PENDING_REVIEW)
+        profile.verification_results = {
+            name: {
+                "final_decision": "ACCEPT",
+                "quality_status": "ACCEPTABLE_QUALITY",
+                "reason_codes": [],
+                "documents_version": profile.documents_version,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+            for name in DOCUMENT_TYPES
+        }
+        profile.verification_reject_counts = {name: 0 for name in DOCUMENT_TYPES}
+        profile.save()
         self._reject(self.driver.pk, "Please retake the selfie.")
         response = self.driver_client.post(reverse("driver-submit"))
         self.assertEqual(response.status_code, 200, response.content)

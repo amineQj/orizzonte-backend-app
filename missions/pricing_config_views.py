@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
@@ -11,6 +13,8 @@ from rest_framework.views import APIView
 from .permissions import IsBoss
 from .pricing_services import get_active_config, update_pricing_config
 from .serializers import PricingConfigSerializer, PricingConfigUpdateSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class PricingConfigUpdateThrottle(UserRateThrottle):
@@ -55,13 +59,15 @@ class PricingConfigUpdateView(APIView):
                 parameters=parameters,
             )
         except Exception as exc:  # noqa: BLE001
-            # DRF's ValidationError carries .detail; re-raise so the handler
-            # produces a proper 400. Other exceptions become 500.
             from rest_framework.exceptions import ValidationError as DRFValidationError
 
             if isinstance(exc, DRFValidationError):
                 return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
-            raise
+            logger.exception("Unexpected error updating pricing config")
+            return Response(
+                {"detail": "Internal server error.", "code": "internal_error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         return Response(
             PricingConfigSerializer(new_config).data,

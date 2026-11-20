@@ -294,7 +294,8 @@ class MissionDriverListSerializer(serializers.ModelSerializer):
     display_status = serializers.SerializerMethodField()
     is_taken = serializers.SerializerMethodField()
     taken_by = serializers.SerializerMethodField()
- 
+    phone_number = serializers.SerializerMethodField()
+
     class Meta:
         model = Mission
         fields = [
@@ -353,6 +354,16 @@ class MissionDriverListSerializer(serializers.ModelSerializer):
             emp = obj.assigned_employee
             full_name = f"{emp.first_name} {emp.last_name}".strip()
             return full_name or emp.username
+        return None
+
+    def get_phone_number(self, obj: Mission):
+        request = self.context.get("request") if isinstance(self.context, dict) else None
+        user = getattr(request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+                return obj.phone_number
+            if obj.assigned_employee_id is not None and obj.assigned_employee_id == getattr(user, "pk", None):
+                return obj.phone_number
         return None
  
  

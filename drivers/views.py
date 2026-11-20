@@ -38,6 +38,8 @@ from .services import (
     MissingFieldsError,
     ProfileTransitionError,
     VersionConflictError,
+    VerificationRequiredError,
+    DocumentRejectedError,
     agent_review,
     approve_profile,
     get_or_create_profile,
@@ -57,6 +59,15 @@ _EXTENSION_MIME = {
 
 
 class DriverPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class AgentPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
     page_size = 20
     page_size_query_param = "page_size"
     max_page_size = 100
@@ -141,6 +152,25 @@ class DriverSubmitView(APIView):
                     "missing": exc.missing,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DocumentRejectedError as exc:
+            return Response(
+                {
+                    "detail": "A document was rejected.",
+                    "code": "document_rejected",
+                    "slot": exc.slot,
+                    "reason_codes": exc.reason_codes,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except VerificationRequiredError as exc:
+            return Response(
+                {
+                    "detail": "Verification is required.",
+                    "code": "verification_required",
+                    "slot": exc.slot,
+                },
+                status=status.HTTP_409_CONFLICT,
             )
         except ProfileTransitionError as exc:
             return Response(
@@ -232,6 +262,15 @@ class ApproveDriverView(APIView):
         profile = _profile_or_404(pk)
         try:
             profile = approve_profile(profile, request.user)
+        except MissingFieldsError as exc:
+            return Response(
+                {
+                    "detail": "The driver profile is incomplete.",
+                    "code": "profile_incomplete",
+                    "missing": exc.missing,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         except ProfileTransitionError as exc:
             return Response(
                 {"detail": str(exc), "code": "invalid_profile_transition"},
@@ -279,7 +318,9 @@ class AgentPendingDriversView(AgentBaseView):
         queryset = DriverProfile.objects.filter(
             status=DriverProfile.Status.PENDING_REVIEW
         ).order_by("updated_at")
-        return Response(AgentPendingDriverSerializer(queryset, many=True).data)
+        paginator = AgentPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        return paginator.get_paginated_response(AgentPendingDriverSerializer(page, many=True).data)
 
 
 class AgentDriverDetailView(AgentBaseView):

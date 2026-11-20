@@ -54,6 +54,7 @@ class DriverProfileSerializer(serializers.ModelSerializer):
 
     missing = serializers.SerializerMethodField()
     documents = serializers.SerializerMethodField()
+    verification_results = serializers.SerializerMethodField()
 
     class Meta:
         model = DriverProfile
@@ -71,6 +72,7 @@ class DriverProfileSerializer(serializers.ModelSerializer):
             "documents_version",
             "missing",
             "documents",
+            "verification_results",
             "created_at",
             "updated_at",
         ]
@@ -81,6 +83,9 @@ class DriverProfileSerializer(serializers.ModelSerializer):
 
     def get_documents(self, obj) -> dict:
         return _document_payload(obj, "driver-document")
+
+    def get_verification_results(self, obj) -> dict:
+        return obj.verification_results or {}
 
 
 class DriverProfileUpdateSerializer(serializers.ModelSerializer):
@@ -207,6 +212,8 @@ class BossDriverDetailSerializer(serializers.ModelSerializer):
 
     user_id = serializers.IntegerField(read_only=True)
     documents = serializers.SerializerMethodField()
+    missing = serializers.SerializerMethodField()
+    verification_results = serializers.SerializerMethodField()
 
     class Meta:
         model = DriverProfile
@@ -225,12 +232,20 @@ class BossDriverDetailSerializer(serializers.ModelSerializer):
             "reviewed_at",
             "documents_version",
             "documents",
+            "missing",
+            "verification_results",
             "created_at",
             "updated_at",
         ]
 
     def get_documents(self, obj) -> dict:
         return _document_payload(obj, "driver-document")
+
+    def get_missing(self, obj) -> dict:
+        return obj.missing_fields()
+
+    def get_verification_results(self, obj) -> dict:
+        return obj.verification_results or {}
 
 
 class DriverRejectSerializer(serializers.Serializer):

@@ -99,6 +99,10 @@ class DriverProfile(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
     documents_version = models.PositiveIntegerField(default=0)
 
+    verification_results = models.JSONField(default=dict, blank=True)
+    verification_reject_counts = models.JSONField(default=dict, blank=True)
+    verification_flagged_for_manual_review = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

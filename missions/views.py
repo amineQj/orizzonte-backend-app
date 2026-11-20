@@ -9,6 +9,7 @@ Endpoint map
 Client:
     POST /missions/estimate/          → price estimation (no DB write)
     POST /missions/confirm/           → confirm mission (DB write)
+    GET  /missions/client/my/         → list missions created by the client
  
 Driver:
     GET  /missions/available/         → list active missions with status colours
@@ -23,6 +24,8 @@ Boss:
 from __future__ import annotations
  
 from rest_framework import status
+from rest_framework.generics import GenericAPIView
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -224,8 +227,10 @@ class AvailableMissionsView(APIView):
             .select_related("assigned_employee")
             .order_by("-created_at")
         )
-        serializer = MissionDriverListSerializer(missions, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = MissionPagination()
+        page = paginator.paginate_queryset(missions, request, view=self)
+        serializer = MissionDriverListSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
 
 
 class DriverMissionHistoryView(APIView):
@@ -243,10 +248,63 @@ class DriverMissionHistoryView(APIView):
             .filter(assigned_employee=request.user)
             .order_by("-created_at")
         )
-        serializer = MissionDriverListSerializer(missions, many=True)
+        paginator = MissionPagination()
+        page = paginator.paginate_queryset(missions, request, view=self)
+        serializer = MissionDriverListSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+class MissionPagination(PageNumberPagination):
+    """Pagination for mission lists (50 per page)."""
+
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class ClientMissionPagination(PageNumberPagination):
+    """Small pages for a client's own mission history."""
+
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class ClientMissionHistoryView(GenericAPIView):
+    """
+    GET /missions/client/my/
+
+    Returns every mission created by the authenticated client, newest first.
+    Uses the same read-only shape as the confirmation response
+    (``MissionClientSerializer``). Results are paginated: 50 per page by
+    default, overridable with ``?page_size=`` (max 100).
+
+    Permissions: client only. Drivers, bosses and anonymous callers are
+    rejected by ``IsClient`` (403 / 401 respectively).
+    """
+
+    permission_classes = [IsClient]
+    pagination_class = ClientMissionPagination
+    serializer_class = MissionClientSerializer
+
+    def get_queryset(self):
+        return (
+            Mission.objects
+            .filter(client=self.request.user)
+            .select_related("assigned_employee")
+            .order_by("-created_at")
+        )
+
+    def get(self, request):
+        missions = self.get_queryset()
+        page = self.paginate_queryset(missions)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(missions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
- 
- 
+
+
 class AcceptMissionView(APIView):
     """
     POST /missions/<pk>/accept/
@@ -394,13 +452,20 @@ class AllMissionsView(APIView):
  
     def get(self, request):
         qs = Mission.objects.select_related("client", "assigned_employee").order_by("-created_at")
- 
+
         status_filter = request.query_params.get("status")
         if status_filter:
+            if status_filter not in {choice[0] for choice in MissionStatus.choices}:
+                return Response(
+                    {"detail": "Invalid status filter.", "code": "invalid_status"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             qs = qs.filter(status=status_filter)
- 
-        serializer = MissionBossSerializer(qs, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+
+        paginator = MissionPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        serializer = MissionBossSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class AssignMissionView(APIView):
@@ -495,13 +560,24 @@ class AdminDriverHistoryView(APIView):
     permission_classes = [IsBoss]
 
     def get(self, request, pk: int):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        if not User.objects.filter(pk=pk, role="driver").exists():
+            return Response(
+                {"detail": "Driver not found."}, status=status.HTTP_404_NOT_FOUND
+            )
+
         missions = (
             Mission.objects
             .filter(assigned_employee_id=pk)
+            .select_related("client", "assigned_employee")
             .order_by("-created_at")
         )
-        serializer = MissionBossSerializer(missions, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = MissionPagination()
+        page = paginator.paginate_queryset(missions, request, view=self)
+        serializer = MissionBossSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class CancelMissionView(APIView):

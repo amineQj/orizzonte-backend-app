@@ -115,7 +115,9 @@ def get_active_config() -> PricingConfig:
     if config_model is not None:
         return config_model
 
-    return seed_default_config(activate=True)
+    raise RuntimeError(
+        "No pricing configuration is available. Run 'python manage.py seed_pricing' or apply migrations."
+    )
 
 
 def public_rules(config_model: PricingConfig) -> dict[str, Any]:
